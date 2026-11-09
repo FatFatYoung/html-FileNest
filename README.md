@@ -196,7 +196,8 @@ Or manually:
 ```
 html-FileNest/
 ├── src/
-│   ├── html-FileNest.js    # Backend source code (Node.js/Bun)
+│   └── html-FileNest.js    # Backend source code (Node.js/Bun)
+├── demo/
 │   └── index.html          # Standalone web UI (edit to customize)
 ├── dist/                   # Build output (gitignored)
 │   └── html-FileNest.exe   # Compiled executable (self-contained, auto-deploys index.html)
