@@ -851,8 +851,6 @@ async function officePreview(res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg);
   const s = await fs.promises.stat(file);
   if (!s.isFile()) throw new Error('not a file');
-  const MAX = 20 * 1024 * 1024;
-  if (s.size > MAX) throw new Error('file too large (max 20MB)');
   const buf = await fs.promises.readFile(file);
   const ext = path.extname(file).toLowerCase();
 
@@ -891,6 +889,19 @@ async function officePreview(res, q, cfg) {
       slides.push(texts.join(' '));
     }
     return sendJson(res, 200, { ok: true, type: 'pptx', slides, ext: 'pptx' });
+  }
+
+  // —— AI 文件：PDF 兼容型 → PDF 预览；旧版 PostScript → 提示系统打开 ——
+  if (ext === '.ai') {
+    if (buf.length >= 5 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46 && buf[4] === 0x2D) {
+      // %PDF- 头：PDF 兼容 AI，返回 pdf 标记让前端用 iframe 预览
+      return sendJson(res, 200, { ok: true, type: 'pdf', ext });
+    }
+    if (buf.length >= 2 && buf[0] === 0x25 && buf[1] === 0x21) {
+      // %!PS-Adobe 头：旧版 PostScript AI，无法网页预览
+      return sendJson(res, 200, { ok: true, type: 'fallback', message: 'PostScript 格式 AI 文件，需用 Illustrator 打开', ext });
+    }
+    // 未知格式：尝试按 PSD 处理（某些 AI 可能内嵌 PSD 数据）
   }
 
   // —— PSD / PSB：提取内嵌 JPEG 缩略图 → 复合图像兜底 ——
