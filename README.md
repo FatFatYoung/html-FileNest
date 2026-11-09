@@ -9,8 +9,8 @@ html-FileNest is a lightweight web-based file manager that runs locally on Windo
 ### Key Features
 
 - 📂 **Full File Management** — Browse, create, rename, copy, move, delete, and upload files/folders
-- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code files (UTF-8/UTF-16/GB18030 auto-detect), and Office documents (via WPS)
-- 🌐 **Customizable Web UI** — Standalone `index.html` for easy personalization; dark-themed grid/list views, breadcrumb, search, sorting, and grouping
+- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code (UTF-8/UTF-16/GB18030), Office (docx/xlsx/pptx), Design (PSD/PSB/AI)
+- 🌐 **Customizable Web UI** — Standalone `index.html` for easy personalization; dark-themed grid/list views, filename search, directory tree sidebar, sorting, and grouping
 - 🔒 **Secure** — Whitelist root paths, block executables, local-origin enforcement, optional auth token
 - 📁 **Full Character Support** — Perfectly handles Tibetan, Emoji, special symbols, super-long paths
 - 🛡️ **Crash-Proof** — Global exception catching keeps the service alive
@@ -159,12 +159,14 @@ Config values support `${VAR}` syntax for dynamic expansion:
 
 - **Customizable UI** — The UI is a standalone `index.html` file. Source at `src/index.html`; deployed to `C:\html-FileNest\index.html` on first run. Edit the deployed file to personalize (hot-reloads on refresh)
 - **Grid / List views** — Toggle between visual grid and detailed list
-- **Breadcrumb navigation** — Click any path segment to jump
-- **Search filter** — Filter files in the current directory
+- **Directory tree sidebar** — Clickable tree showing current path hierarchy and subdirectories; "All Locations" root node for quick return
+- **Filename search** — Filter files in the current directory from the toolbar
 - **Sorting** — Sort by name, size, modified time, or type (ascending/descending)
 - **Grouping** — Group files by category (folders, documents, images, videos, etc.)
-- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office docs; drag the left edge of the preview panel to resize
-- **Open with system handler** — Double-click a file to open it with the system default application
+- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office (docx/xlsx/pptx), Design (PSD/PSB/AI); drag the left edge of the preview panel to resize
+- **Adaptive layout** — Filenames wrap naturally at any zoom level; list columns scale with font size
+- **Preview header** — 📂 open with system handler + ⬇ download button
+- **Open with system handler** — Double-click or use the 📂 button in the preview header
 - **Context menu** — Right-click for Open, Preview, Reveal, Rename, Copy to…, Move to…, Delete
 - **Drag & drop upload** — Drag files into the window to upload
 - **Keyboard shortcuts** — `Backspace` (up), `Alt+←/→` (back/forward), `F5` (refresh), `Ctrl+Shift+N` (new folder), `Ctrl+U` (upload)
@@ -216,14 +218,7 @@ html-FileNest/
 ## Changelog
 
 **v1.0.0 (Latest)**
-- Initial release: Web-based local file manager with full file operations, rich preview, and secure access control.
-- Standalone `index.html` UI — easily customizable without touching backend code (hot-reloads on refresh).
-- Smart text preview with UTF-8/UTF-16/GB18030 auto-detection (BOM-aware + GBK fallback, no more garbled Chinese or false "binary file" errors).
-- Resizable preview panel — drag the left edge to adjust preview width.
-- Adaptive layout — filenames wrap naturally at any zoom level; list columns scale with font size.
-- Double-click opens files with the system default handler; preview via single-click or context menu.
-- File copy (`/api/cp`, recursive) and move operations with dialog-based target selection.
-- Client-side sorting (name/size/time/type, asc/desc) and grouping by file category.
+- Initial release.
 - Compatible with htmlFileAgent's `/open`, `/exists`, `/reveal`, `/open-folder` endpoints.
 
 ## Acknowledgments
