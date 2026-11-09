@@ -196,8 +196,7 @@ Or manually:
 ```
 html-FileNest/
 ├── src/
-│   └── html-FileNest.js    # Backend source code (Node.js/Bun)
-├── demo/
+│   ├── html-FileNest.js    # Backend source code (Node.js/Bun)
 │   └── index.html          # Standalone web UI (edit to customize)
 ├── dist/                   # Build output (gitignored)
 │   └── html-FileNest.exe   # Compiled executable (self-contained, auto-deploys index.html)
@@ -248,7 +247,8 @@ html-FileNest/
 | [mammoth](https://www.npmjs.com/package/mammoth) | DOCX → HTML conversion for document preview | BSD-2-Clause |
 | [SheetJS (xlsx)](https://sheetjs.com) | XLSX/XLS spreadsheet parsing for table preview | Apache-2.0 |
 | [JSZip](https://stuk.github.io/jszip/) | ZIP archive browsing/extract + PPTX slide text parsing | MIT/GPL-3.0 |
-| [WPS Office](https://www.wps.cn) | Office document open-with-system-handler (via OS file association) | Proprietary (free tier) |
+
+> **Note**: Office document "open with system handler" uses the OS file association (`explorer.exe`/`cmd /c start`) — no third-party Office software is bundled or required. SheetJS is pinned to v0.18.5 (Apache-2.0); newer versions from the SheetJS CDN use a different license.
 
 ### Standards & Specifications
 
