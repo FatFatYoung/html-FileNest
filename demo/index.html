@@ -829,6 +829,21 @@ body {
       previewBodyEl.appendChild(loading);
       apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
         previewBodyEl.innerHTML = '';
+        if (r.type === 'fallback') {
+          renderFallback(item, dlUrl, r.message || null);
+          return;
+        }
+        if (r.type === 'pdf') {
+          var aiPdfWrap = document.createElement('div');
+          aiPdfWrap.style.cssText = 'width:100%;height:calc(100vh - 220px);';
+          var aiPdfIframe = document.createElement('iframe');
+          aiPdfIframe.src = '/api/raw?path=' + enc(item.path);
+          aiPdfIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:6px;background:#fff;';
+          aiPdfWrap.appendChild(aiPdfIframe);
+          previewBodyEl.appendChild(aiPdfWrap);
+          addPreviewActions(item, dlUrl);
+          return;
+        }
         if (r.type === 'image') {
           var img = document.createElement('img');
           img.src = r.dataUrl;
