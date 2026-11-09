@@ -9,7 +9,9 @@ html-FileNest is a lightweight web-based file manager that runs locally on Windo
 ### Key Features
 
 - 📂 **Full File Management** — Browse, create, rename, copy, move, delete, and upload files/folders
-- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code (UTF-8/UTF-16/GB18030), Office (docx/xlsx/pptx), Design (PSD/PSB/AI)
+- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code (UTF-8/UTF-16/GB18030), Office (docx/xlsx/pptx), Design (PSD/PSB/AI), ZIP archive browsing
+- 🗂️ **ZIP Archive Browser** — Navigate ZIP contents as a virtual directory, preview/download files inside the archive
+- 📂 **System Open** — Open any file or folder with its default system application
 - 🌐 **Customizable Web UI** — Standalone `index.html` for easy personalization; dark-themed grid/list views, filename search, directory tree sidebar, sorting, and grouping
 - 🔒 **Secure** — Whitelist root paths, block executables, local-origin enforcement, optional auth token
 - 📁 **Full Character Support** — Perfectly handles Tibetan, Emoji, special symbols, super-long paths
@@ -91,12 +93,16 @@ All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `
 | GET | `/api/raw?path=<abs>` | Stream file content (supports Range) |
 | GET | `/api/raw?path=<abs>&download=1` | Download file as attachment |
 | GET | `/api/read?path=<abs>` | Read text file content (max 5 MB) |
+| GET | `/api/office-preview?path=<abs>` | Office/Design preview (docx/xlsx/pptx/psd/psb/ai) |
+| GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List ZIP archive contents (virtual directory) |
+| GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from ZIP archive |
 | POST | `/api/mkdir` | Create folder `{path, name}` |
 | POST | `/api/rename` | Rename `{path, newName}` |
 | POST | `/api/rm` | Delete `{path, recursive?}` |
 | POST | `/api/mv` | Move `{from, to}` |
 | POST | `/api/cp` | Copy `{from, to}` (recursive) |
 | POST | `/api/write` | Write text file `{path, content}` |
+| POST | `/api/open` | Open file/folder with system handler `{path}` |
 | POST | `/api/upload?path=<dir>&name=<file>` | Upload file (stream body) |
 
 ## Configuration
@@ -165,7 +171,7 @@ Config values support `${VAR}` syntax for dynamic expansion:
 - **Filename search** — Filter files in the current directory from the toolbar
 - **Sorting** — Sort by name, size, modified time, or type (ascending/descending)
 - **Grouping** — Group files by category (folders, documents, images, videos, etc.)
-- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office (docx/xlsx/pptx), Design (PSD/PSB/AI); drag the left edge of the preview panel to resize
+- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office (docx/xlsx/pptx), Design (PSD/PSB/AI); browse ZIP archive contents (navigate subfolders, preview/download files inside); drag the left edge of the preview panel to resize
 - **Adaptive layout** — Filenames wrap naturally at any zoom level; list columns scale with font size
 - **Preview header** — 📂 open with system handler + ⬇ download button
 - **Open with system handler** — Double-click or use the 📂 button in the preview header
@@ -240,7 +246,7 @@ html-FileNest/
 | [pkg](https://github.com/vercel/pkg) | Alternative Node.js-to-EXE compiler | MIT |
 | [mammoth](https://www.npmjs.com/package/mammoth) | DOCX → HTML conversion for document preview | BSD-2-Clause |
 | [SheetJS (xlsx)](https://sheetjs.com) | XLSX/XLS spreadsheet parsing for table preview | Apache-2.0 |
-| [JSZip](https://stuk.github.io/jszip/) | ZIP extraction for PPTX slide text parsing | MIT/GPL-3.0 |
+| [JSZip](https://stuk.github.io/jszip/) | ZIP archive browsing/extract + PPTX slide text parsing | MIT/GPL-3.0 |
 | [WPS Office](https://www.wps.cn) | Office document open-with-system-handler (via OS file association) | Proprietary (free tier) |
 
 ### Standards & Specifications
