@@ -9,7 +9,7 @@ html-FileNest is a lightweight web-based file manager that runs locally on Windo
 ### Key Features
 
 - 📂 **Full File Management** — Browse, create, rename, copy, move, delete, and upload files/folders
-- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code files (UTF-8/UTF-16 auto-detect), and Office documents (via WPS)
+- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code files (UTF-8/UTF-16/GB18030 auto-detect), and Office documents (via WPS)
 - 🌐 **Customizable Web UI** — Standalone `index.html` for easy personalization; dark-themed grid/list views, breadcrumb, search, sorting, and grouping
 - 🔒 **Secure** — Whitelist root paths, block executables, local-origin enforcement, optional auth token
 - 📁 **Full Character Support** — Perfectly handles Tibetan, Emoji, special symbols, super-long paths
@@ -46,6 +46,7 @@ pkg src/html-FileNest.js --targets node18-win-x64 --output dist/html-FileNest.ex
 
 Send `html-FileNest.exe` to the target machine and double-click. It will automatically:
 - Copy itself to `C:\html-FileNest\`
+- Deploy `index.html` to `C:\html-FileNest\index.html` (auto-extracted from the exe; edit this file to customize the UI)
 - Generate `config.json` and a self-signed HTTPS certificate
 - Create a scheduled task (auto-start on login)
 - Start the service and open a confirmation dialog
@@ -156,13 +157,13 @@ Config values support `${VAR}` syntax for dynamic expansion:
 
 ## Web UI Features
 
-- **Customizable UI** — The UI is a standalone `src/index.html` file; edit it directly to personalize the look and feel (hot-reloads on refresh)
+- **Customizable UI** — The UI is a standalone `index.html` file. Source at `src/index.html`; deployed to `C:\html-FileNest\index.html` on first run. Edit the deployed file to personalize (hot-reloads on refresh)
 - **Grid / List views** — Toggle between visual grid and detailed list
 - **Breadcrumb navigation** — Click any path segment to jump
 - **Search filter** — Filter files in the current directory
 - **Sorting** — Sort by name, size, modified time, or type (ascending/descending)
 - **Grouping** — Group files by category (folders, documents, images, videos, etc.)
-- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office docs
+- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office docs; drag the left edge of the preview panel to resize
 - **Open with system handler** — Double-click a file to open it with the system default application
 - **Context menu** — Right-click for Open, Preview, Reveal, Rename, Copy to…, Move to…, Delete
 - **Drag & drop upload** — Drag files into the window to upload
@@ -188,8 +189,7 @@ html-FileNest/
 │   ├── html-FileNest.js    # Backend source code (Node.js/Bun)
 │   └── index.html          # Standalone web UI (edit to customize)
 ├── dist/                   # Build output (gitignored)
-│   ├── html-FileNest.exe   # Compiled executable
-│   └── index.html          # Copied from src/ during build
+│   └── html-FileNest.exe   # Compiled executable (self-contained, auto-deploys index.html)
 ├── build.ts                # Build script (bun build.ts)
 ├── README.md
 ├── LICENSE
@@ -218,7 +218,9 @@ html-FileNest/
 **v1.0.0 (Latest)**
 - Initial release: Web-based local file manager with full file operations, rich preview, and secure access control.
 - Standalone `index.html` UI — easily customizable without touching backend code (hot-reloads on refresh).
-- Smart text preview with UTF-8/UTF-16 auto-detection (BOM-aware, no more false "binary file" errors).
+- Smart text preview with UTF-8/UTF-16/GB18030 auto-detection (BOM-aware + GBK fallback, no more garbled Chinese or false "binary file" errors).
+- Resizable preview panel — drag the left edge to adjust preview width.
+- Adaptive layout — filenames wrap naturally at any zoom level; list columns scale with font size.
 - Double-click opens files with the system default handler; preview via single-click or context menu.
 - File copy (`/api/cp`, recursive) and move operations with dialog-based target selection.
 - Client-side sorting (name/size/time/type, asc/desc) and grouping by file category.
@@ -244,6 +246,7 @@ html-FileNest/
 - **RFC 7233** — HTTP Range Requests (used for `/api/raw` video/audio streaming)
 - **RFC 6838** — Media Type specifications (MIME mapping in `/api/raw`)
 - **BOM / Unicode** — UTF-8 (EF BB BF), UTF-16 LE (FF FE), UTF-16 BE (FE FF) encoding auto-detection
+- **GB18030 / GBK** — Chinese text encoding fallback when UTF-8 decoding produces replacement characters
 
 ## License
 
