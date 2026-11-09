@@ -35,9 +35,11 @@ Prerequisites: Install [Bun](https://bun.sh) (recommended) or Node.js ≥ 18 + [
 
 ```bash
 # Bun (recommended)
-bun build --compile src/html-FileNest.js --outfile dist/html-FileNest.exe
+bun install
+bun run build.ts
 
 # Node.js + pkg (alternative)
+npm install
 npm install -g pkg
 pkg src/html-FileNest.js --targets node18-win-x64 --output dist/html-FileNest.exe
 ```
@@ -192,7 +194,9 @@ html-FileNest/
 │   └── index.html          # Standalone web UI (edit to customize)
 ├── dist/                   # Build output (gitignored)
 │   └── html-FileNest.exe   # Compiled executable (self-contained, auto-deploys index.html)
-├── build.ts                # Build script (bun build.ts)
+├── build.ts                # Build script (bun run build.ts)
+├── package.json            # Dependency manifest
+├── bun.lock                # Dependency lock file
 ├── README.md
 ├── LICENSE
 └── .gitignore
@@ -234,7 +238,10 @@ html-FileNest/
 | [Node.js](https://nodejs.org) | Runtime environment (fs, http, https, crypto, child_process, etc.) | MIT |
 | [Bun](https://bun.sh) | Recommended build toolchain & single-EXE compiler | MIT / Apache-2.0 |
 | [pkg](https://github.com/vercel/pkg) | Alternative Node.js-to-EXE compiler | MIT |
-| [WPS Office](https://www.wps.cn) | Office document preview engine (via browser IFrame) | Proprietary (free tier) |
+| [mammoth](https://www.npmjs.com/package/mammoth) | DOCX → HTML conversion for document preview | BSD-2-Clause |
+| [SheetJS (xlsx)](https://sheetjs.com) | XLSX/XLS spreadsheet parsing for table preview | Apache-2.0 |
+| [JSZip](https://stuk.github.io/jszip/) | ZIP extraction for PPTX slide text parsing | MIT/GPL-3.0 |
+| [WPS Office](https://www.wps.cn) | Office document open-with-system-handler (via OS file association) | Proprietary (free tier) |
 
 ### Standards & Specifications
 
