@@ -834,14 +834,23 @@ body {
           return;
         }
         if (r.type === 'pdf') {
-          var aiPdfWrap = document.createElement('div');
-          aiPdfWrap.style.cssText = 'width:100%;height:calc(100vh - 220px);';
-          var aiPdfIframe = document.createElement('iframe');
-          aiPdfIframe.src = '/api/raw?path=' + enc(item.path);
-          aiPdfIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:6px;background:#fff;';
-          aiPdfWrap.appendChild(aiPdfIframe);
-          previewBodyEl.appendChild(aiPdfWrap);
-          addPreviewActions(item, dlUrl);
+          // 用 Blob URL + application/pdf MIME 渲染，避免浏览器自动下载
+          fetch('/api/raw?path=' + enc(item.path)).then(function (resp) {
+            return resp.blob();
+          }).then(function (blob) {
+            var pdfBlob = new Blob([blob], { type: 'application/pdf' });
+            var url = URL.createObjectURL(pdfBlob);
+            var aiPdfWrap = document.createElement('div');
+            aiPdfWrap.style.cssText = 'width:100%;height:calc(100vh - 220px);';
+            var aiPdfIframe = document.createElement('iframe');
+            aiPdfIframe.src = url;
+            aiPdfIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:6px;background:#fff;';
+            aiPdfWrap.appendChild(aiPdfIframe);
+            previewBodyEl.appendChild(aiPdfWrap);
+            addPreviewActions(item, dlUrl);
+          }).catch(function (e) {
+            renderFallback(item, dlUrl, e.message);
+          });
           return;
         }
         if (r.type === 'image') {
