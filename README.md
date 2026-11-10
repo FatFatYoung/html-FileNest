@@ -227,7 +227,15 @@ html-FileNest/
 
 ## Changelog
 
-**v1.0.0 (Latest)**
+**v1.1.0 (Latest)**
+- Fixed AI file preview: PDF-compatible AI renders in iframe via Blob URL; PostScript AI shows system-handler prompt.
+- Fixed browser auto-downloading raw files on preview: added `Content-Disposition: inline` for non-download responses.
+- Removed 20MB file size limit for PSD/AI/Office preview.
+- PSD composite image extraction: added ZIP compression (2/3) and 16-bit depth support; fixed header offset parsing.
+- Added ZIP archive browsing (navigate subfolders, preview/download files inside) and `/api/open` system-handler endpoint.
+- Pinned dependency versions (xlsx 0.18.5, jszip 3.10.2, mammoth 1.13.0) for license compliance.
+
+**v1.0.0**
 - Initial release.
 - Compatible with htmlFileAgent's `/open`, `/exists`, `/reveal`, `/open-folder` endpoints.
 
