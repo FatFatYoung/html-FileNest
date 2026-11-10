@@ -845,7 +845,7 @@ async function archiveExtract(req, res, q, cfg) {
   res.writeHead(200, {
     'Content-Type': mime,
     'Content-Length': data.length,
-    'Content-Disposition': 'inline; filename="' + path.basename(entry) + '"'
+    'Content-Disposition': 'inline; filename="' + path.basename(entry).replace(/[^\x20-\x7e]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(path.basename(entry))
   });
   res.end(data);
 }
@@ -953,7 +953,8 @@ function streamFile(req, res, q, cfg) {
       if (dl) {
         headers['Content-Disposition'] = "attachment; filename*=UTF-8''" + encodeURIComponent(fname);
       } else {
-        headers['Content-Disposition'] = 'inline; filename="' + fname + '"';
+        const asciiName = fname.replace(/[^\x20-\x7e]/g, '_');
+        headers['Content-Disposition'] = "inline; filename=\"" + asciiName + "\"; filename*=UTF-8''" + encodeURIComponent(fname);
       }
 
       const range = req.headers.range;
