@@ -23,7 +23,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '1.0.0.0';
+const SERVICE_VER = '1.1.0.0';
 const HOST        = '127.0.0.1';
 const INSTALL_DIR = 'C:\\html-FileNest';
 const EXE_PATH    = path.join(INSTALL_DIR, 'html-FileNest.exe');
@@ -950,6 +950,8 @@ function streamFile(req, res, q, cfg) {
       };
       if (dl) {
         headers['Content-Disposition'] = "attachment; filename*=UTF-8''" + encodeURIComponent(fname);
+      } else {
+        headers['Content-Disposition'] = 'inline; filename="' + fname + '"';
       }
 
       const range = req.headers.range;
