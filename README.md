@@ -9,7 +9,7 @@ html-FileNest is a lightweight web-based file manager that runs locally on Windo
 ### Key Features
 
 - 📂 **Full File Management** — Browse, create, rename, copy, move, delete, and upload files/folders
-- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code (UTF-8/UTF-16/GB18030), Office (docx/xlsx/pptx), Design (PSD/PSB/AI), ZIP archive browsing
+- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code (UTF-8/UTF-16/GB18030), Office (doc/docx/xls/xlsx/ppt/pptx), Design (PSD/PSB/AI), ZIP archive browsing
 - 🗂️ **ZIP as Folder** — Click a ZIP to browse its contents like a regular folder in the main file list; navigate subdirectories, preview/download files inside; ZIP contents are read-only (no rename/delete/copy/move) but support preview, download, and open with system handler
 - 📂 **System Open** — Open any file or folder with its default system application
 - 🌐 **Customizable Web UI** — Standalone `index.html` for easy personalization; dark-themed grid/list views, filename search, directory tree sidebar, sorting, and grouping
@@ -93,7 +93,7 @@ All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `
 | GET | `/api/raw?path=<abs>` | Stream file content (supports Range) |
 | GET | `/api/raw?path=<abs>&download=1` | Download file as attachment |
 | GET | `/api/read?path=<abs>` | Read text file content (max 5 MB) |
-| GET | `/api/office-preview?path=<abs>` | Office/Design preview (docx/xlsx/pptx/psd/psb/ai) |
+| GET | `/api/office-preview?path=<abs>` | Office/Design preview (doc/docx/xls/xlsx/ppt/pptx/psd/psb/ai) |
 | GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List ZIP archive contents (virtual directory) |
 | GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from ZIP archive |
 | POST | `/api/mkdir` | Create folder `{path, name}` |
@@ -171,7 +171,7 @@ Config values support `${VAR}` syntax for dynamic expansion:
 - **Filename search** — Filter files in the current directory from the toolbar
 - **Sorting** — Sort by name, size, modified time, or type (ascending/descending)
 - **Grouping** — Group files by category (folders, documents, images, videos, etc.)
-- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office (docx/xlsx/pptx), Design (PSD/PSB/AI); click ZIP to browse like a folder (navigate subdirectories, preview/download files inside); drag the left edge of the preview panel to resize
+- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office (doc/docx/xls/xlsx/ppt/pptx), Design (PSD/PSB/AI); click ZIP to browse like a folder (navigate subdirectories, preview/download files inside); drag the left edge of the preview panel to resize
 - **Adaptive layout** — Filenames wrap naturally at any zoom level; list columns scale with font size
 - **Preview header** — 📂 open with system handler + ⬇ download button
 - **Open with system handler** — Double-click or use the 📂 button in the preview header
@@ -227,7 +227,13 @@ html-FileNest/
 
 ## Changelog
 
-**v1.2.0 (Latest)**
+**v1.3.0 (Latest)**
+- Added legacy Office format preview: `.doc` (text extraction via word-extractor), `.xls` (via SheetJS), `.ppt` (binary text scan).
+- Fixed non-ASCII (Chinese/CJK) filename preview failure: `Content-Disposition` header now uses RFC 5987 dual encoding to avoid `ERR_INVALID_CHAR`.
+- Extension normalization: multi-dot filenames (`.tar.gz` → `gz`) via `lastIndexOf('.')`.
+- Image format support expanded to 17 formats (added `jpe`, `jfif`, `heic`, `heif`, `apng`).
+
+**v1.2.0**
   - ZIP archives now open as folders in the main file list (click to enter, navigate subdirectories, preview/download inside) instead of the preview pane.
   - ZIP contents are read-only (rename/delete/copy/move disabled) but support preview, download, and open with system handler (extracted to temp).
   - Breadcrumb shows ZIP virtual path navigation.
@@ -258,6 +264,7 @@ html-FileNest/
 | [Bun](https://bun.sh) | Recommended build toolchain & single-EXE compiler | MIT / Apache-2.0 |
 | [pkg](https://github.com/vercel/pkg) | Alternative Node.js-to-EXE compiler | MIT |
 | [mammoth](https://www.npmjs.com/package/mammoth) | DOCX → HTML conversion for document preview | BSD-2-Clause |
+| [word-extractor](https://www.npmjs.com/package/word-extractor) | Legacy .doc (OLE2) text extraction | MIT |
 | [SheetJS (xlsx)](https://sheetjs.com) | XLSX/XLS spreadsheet parsing for table preview | Apache-2.0 |
 | [JSZip](https://stuk.github.io/jszip/) | ZIP archive browsing/extract + PPTX slide text parsing | MIT/GPL-3.0 |
 

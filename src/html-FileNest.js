@@ -10,6 +10,7 @@ const https  = require('https');
 const urlLib = require('url');
 const crypto = require('crypto');
 const mammoth = require('mammoth');
+const WordExtractor = require('word-extractor');
 const XLSX = require('xlsx');
 const JSZip = require('jszip');
 const { spawn, spawnSync } = require('child_process');
@@ -23,7 +24,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '1.2.0.0';
+const SERVICE_VER = '1.3.0.0';
 const HOST        = '127.0.0.1';
 const INSTALL_DIR = 'C:\\html-FileNest';
 const EXE_PATH    = path.join(INSTALL_DIR, 'html-FileNest.exe');
@@ -849,6 +850,49 @@ async function archiveExtract(req, res, q, cfg) {
   });
   res.end(data);
 }
+// —— PPT (OLE2) 文本提取：扫描二进制中的 UTF-16LE / ASCII 文本串 ——
+function extractPptText(buf) {
+  const strings = [];
+  const MIN_LEN = 4;
+
+  // 扫描 UTF-16LE 文本（中文、英文混排）
+  let text = '';
+  for (let i = 0; i < buf.length - 1; i += 2) {
+    const code = buf.readUInt16LE(i);
+    const isPrintable =
+      (code >= 0x20 && code <= 0x7e) ||   // ASCII
+      (code >= 0xa0 && code <= 0xff) ||   // Latin-1
+      (code >= 0x3000 && code <= 0x9fff) || // CJK
+      (code >= 0xff00 && code <= 0xffef) || // Fullwidth
+      code === 0x0a || code === 0x0d;
+    if (isPrintable) {
+      text += String.fromCharCode(code);
+    } else {
+      if (text.length >= MIN_LEN) strings.push(text.trim());
+      text = '';
+    }
+  }
+  if (text.length >= MIN_LEN) strings.push(text.trim());
+
+  // 去重 + 过滤噪声（纯数字/符号、单行重复）
+  const seen = new Set();
+  const filtered = strings.filter(s => {
+    if (!s || s.length < MIN_LEN) return false;
+    // 过滤纯二进制噪声：要求至少 50% 可读字符
+    let readable = 0;
+    for (const ch of s) {
+      const c = ch.charCodeAt(0);
+      if ((c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || (c >= 0x4e00 && c <= 0x9fff)) readable++;
+    }
+    if (readable / s.length < 0.5) return false;
+    if (seen.has(s)) return false;
+    seen.add(s);
+    return true;
+  });
+
+  return filtered.length > 0 ? [filtered.join('\n')] : ['(未能提取文本内容，请用系统程序打开)'];
+}
+
 async function officePreview(res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg);
   const s = await fs.promises.stat(file);
@@ -859,6 +903,19 @@ async function officePreview(res, q, cfg) {
   if (ext === '.docx') {
     const r = await mammoth.convertToHtml({ buffer: buf });
     return sendJson(res, 200, { ok: true, type: 'html', html: r.value, ext: 'docx' });
+  }
+
+  if (ext === '.doc') {
+    try {
+      const extractor = new WordExtractor();
+      const doc = await extractor.extract(buf);
+      const text = doc.getBody();
+      const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const html = '<pre style="white-space:pre-wrap;font-family:sans-serif;line-height:1.8;max-width:100%">' + escaped + '</pre>';
+      return sendJson(res, 200, { ok: true, type: 'html', html, ext: 'doc' });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: 'DOC parse error: ' + e.message });
+    }
   }
 
   if (ext === '.xlsx' || ext === '.xls') {
@@ -891,6 +948,16 @@ async function officePreview(res, q, cfg) {
       slides.push(texts.join(' '));
     }
     return sendJson(res, 200, { ok: true, type: 'pptx', slides, ext: 'pptx' });
+  }
+
+  if (ext === '.ppt') {
+    try {
+      // PPT (OLE2) 无现成 JS 解析库，从二进制扫描提取文本
+      const slides = extractPptText(buf);
+      return sendJson(res, 200, { ok: true, type: 'pptx', slides, ext: 'ppt' });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: 'PPT parse error: ' + e.message });
+    }
   }
 
   // —— AI 文件：PDF 兼容型 → PDF 预览；旧版 PostScript → 提示系统打开 ——
