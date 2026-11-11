@@ -885,59 +885,54 @@ body {
       item._zip = item.path.substring(0, _sep);
       item._zipEntry = item.path.substring(_sep + 2);
     }
-    // —— 压缩包内文件：用 archive-extract 预览 ——
+    // —— 压缩包内文件：用 archive-extract 预览（全类型对齐普通文件）——
     if (item._zip) {
       var zipUrl = '/api/archive-extract?path=' + enc(item._zip) + '&entry=' + enc(item._zipEntry);
       var zipDlUrl = zipUrl;
       var zExt = normExt(item.ext);
-      var zIsImg = ['png','jpg','jpeg','jpe','jfif','gif','bmp','webp','svg','ico','avif','apng','tiff','tif','heic','heif'].indexOf(zExt) >= 0;
-      var zIsVid = ['mp4','webm','ogg','mov','avi','mkv'].indexOf(zExt) >= 0;
+      var zIsImg = ['jpg','jpeg','jpe','jfif','png','gif','webp','svg','bmp','ico','avif','apng','tiff','tif','heic','heif'].indexOf(zExt) >= 0;
+      var zIsVid = ['mp4','webm','mkv','mov','avi','ogv'].indexOf(zExt) >= 0;
+      var zIsAud = ['mp3','wav','flac','m4a','ogg','aac'].indexOf(zExt) >= 0;
+      var zIsPdf = zExt === 'pdf';
+      var zIsOffice = ['doc','docx','xls','xlsx','ppt','pptx'].indexOf(zExt) >= 0;
+      var zIsDesign = ['psd','psb','ai'].indexOf(zExt) >= 0;
       var zIsText = ['txt','text','md','markdown','json','json5','jsonc','js','mjs','cjs',
         'ts','jsx','tsx','html','htm','css','scss','less','xml','yml','yaml','toml','ini',
         'conf','cfg','env','log','csv','tsv','sh','bash','bat','cmd','ps1','py','rb','go',
         'rs','java','c','h','cpp','hpp','cs','php','sql','vue','svelte','lua','pl','kt',
-        'swift','dart','r','tex','rst','asm','s','gradle','properties','lock','diff','patch'].indexOf(zExt) >= 0;
+        'swift','dart','r','tex','rst','asm','s','gradle','properties','lock','diff','patch',
+        'gitignore','gitattributes','dockerfile','makefile'].indexOf(zExt) >= 0;
+      var zNoExt = !zExt;
       if (zIsImg) {
         var zTok = ++previewToken;
         var zImg = document.createElement('img');
-        zImg.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
+        zImg.alt = item.name;
+        var zRetried = false;
         zImg.onerror = function () {
           if (zTok !== previewToken) return;
+          if (!zRetried) { zRetried = true; zImg.src = zipUrl + '&retry=' + Date.now(); return; }
           previewBodyEl.innerHTML = '';
           renderFallback(item, zipDlUrl, '无法加载图片');
         };
         zImg.src = zipUrl;
         previewBodyEl.appendChild(zImg);
+        addPreviewActions(item, zipDlUrl);
       } else if (zIsVid) {
         var zVid = document.createElement('video');
-        zVid.src = zipUrl;
-        zVid.controls = true;
-        zVid.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
+        zVid.src = zipUrl; zVid.controls = true; zVid.preload = 'metadata';
         previewBodyEl.appendChild(zVid);
-      } else if (zIsText) {
-        // 文本类：拉取内容并显示
-        var zTok2 = ++previewToken;
-        fetch(zipUrl, { credentials: 'same-origin' }).then(function (r) {
-          if (!r.ok) throw new Error(r.status);
-          return r.text();
-        }).then(function (txt) {
-          if (zTok2 !== previewToken) return;
-          var pre = document.createElement('pre');
-          pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;padding:12px;color:var(--text);background:var(--bg-2);border-radius:6px;max-height:70vh;overflow:auto;margin:0;';
-          pre.textContent = txt;
-          previewBodyEl.innerHTML = '';
-          previewBodyEl.appendChild(pre);
-        }).catch(function (e) {
-          if (zTok2 !== previewToken) return;
-          previewBodyEl.innerHTML = '';
-          renderFallback(item, zipDlUrl, '无法读取: ' + e.message);
-        });
-        var zWrap = document.createElement('div');
-        zWrap.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-        zWrap.textContent = '加载中...';
-        previewBodyEl.appendChild(zWrap);
-      } else if (['doc','docx','xls','xlsx','ppt','pptx'].indexOf(zExt) >= 0) {
-        // Office 文件：走 office-preview 转换
+        addPreviewActions(item, zipDlUrl);
+      } else if (zIsAud) {
+        var zAud = document.createElement('audio');
+        zAud.src = zipUrl; zAud.controls = true;
+        previewBodyEl.appendChild(zAud);
+        addPreviewActions(item, zipDlUrl);
+      } else if (zIsPdf) {
+        var zIfr = document.createElement('iframe');
+        zIfr.src = zipUrl;
+        previewBodyEl.appendChild(zIfr);
+        addPreviewActions(item, zipDlUrl);
+      } else if (zIsOffice) {
         var zOLoad = document.createElement('div');
         zOLoad.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
         zOLoad.textContent = '加载中...';
@@ -962,13 +957,89 @@ body {
           previewBodyEl.innerHTML = '';
           renderFallback(item, zipDlUrl, e.message);
         });
+      } else if (zIsDesign) {
+        var zDLoad = document.createElement('div');
+        zDLoad.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
+        zDLoad.textContent = '加载中...';
+        previewBodyEl.appendChild(zDLoad);
+        var zDTok = ++previewToken;
+        apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
+          if (zDTok !== previewToken) return;
+          previewBodyEl.innerHTML = '';
+          if (r.type === 'fallback') { renderFallback(item, zipDlUrl, r.message || null); return; }
+          if (r.type === 'image') {
+            var dImg = document.createElement('img');
+            dImg.src = r.dataUrl;
+            dImg.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
+            dImg.alt = item.name;
+            previewBodyEl.appendChild(dImg);
+            var dNote = document.createElement('div');
+            dNote.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
+            dNote.textContent = 'PSD 缩略图预览（完整内容请用 Photoshop 打开）';
+            previewBodyEl.appendChild(dNote);
+          } else if (r.type === 'raw-image') {
+            var dCanvas = document.createElement('canvas');
+            dCanvas.width = r.width; dCanvas.height = r.height;
+            dCanvas.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
+            var dCtx = dCanvas.getContext('2d');
+            var dImgData = dCtx.createImageData(r.width, r.height);
+            var dBin = atob(r.data);
+            for (var di = 0; di < dBin.length && di < dImgData.data.length; di++) dImgData.data[di] = dBin.charCodeAt(di);
+            dCtx.putImageData(dImgData, 0, 0);
+            previewBodyEl.appendChild(dCanvas);
+            var dNote2 = document.createElement('div');
+            dNote2.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
+            dNote2.textContent = 'PSD 复合图像预览（图层内容请用 Photoshop 打开）';
+            previewBodyEl.appendChild(dNote2);
+          } else if (r.type === 'pdf') {
+            fetch(zipUrl).then(function (resp) { return resp.blob(); }).then(function (blob) {
+              var pdfBlob = new Blob([blob], { type: 'application/pdf' });
+              var pdfUrl = URL.createObjectURL(pdfBlob);
+              var aiWrap = document.createElement('div');
+              aiWrap.style.cssText = 'width:100%;height:calc(100vh - 220px);';
+              var aiIfr = document.createElement('iframe');
+              aiIfr.src = pdfUrl;
+              aiIfr.style.cssText = 'width:100%;height:100%;border:none;border-radius:6px;background:#fff;';
+              aiWrap.appendChild(aiIfr);
+              previewBodyEl.appendChild(aiWrap);
+            }).catch(function (e) { renderFallback(item, zipDlUrl, e.message); });
+          }
+          addPreviewActions(item, zipDlUrl);
+        }).catch(function (e) {
+          if (zDTok !== previewToken) return;
+          previewBodyEl.innerHTML = '';
+          renderFallback(item, zipDlUrl, e.message);
+        });
+      } else if (zIsText || zNoExt || item.size < 2 * 1048576) {
+        // 文本类/无扩展名/小文件：拉取内容并显示
+        var zTok2 = ++previewToken;
+        fetch(zipUrl, { credentials: 'same-origin' }).then(function (r) {
+          if (!r.ok) throw new Error(r.status);
+          return r.text();
+        }).then(function (txt) {
+          if (zTok2 !== previewToken) return;
+          previewBodyEl.innerHTML = '';
+          var pre = document.createElement('pre');
+          pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;padding:12px;color:var(--text);background:var(--bg-2);border-radius:6px;max-height:70vh;overflow:auto;margin:0;';
+          pre.textContent = txt;
+          previewBodyEl.appendChild(pre);
+          addPreviewActions(item, zipDlUrl);
+        }).catch(function (e) {
+          if (zTok2 !== previewToken) return;
+          previewBodyEl.innerHTML = '';
+          renderFallback(item, zipDlUrl, '无法读取: ' + e.message);
+        });
+        var zWrap = document.createElement('div');
+        zWrap.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
+        zWrap.textContent = '加载中...';
+        previewBodyEl.appendChild(zWrap);
       } else {
         var zWrap2 = document.createElement('div');
         zWrap2.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
         zWrap2.textContent = '压缩包内文件 · ' + formatSize(item.size) + ' · 点击下载按钮获取';
         previewBodyEl.appendChild(zWrap2);
+        addPreviewActions(item, zipDlUrl);
       }
-      addPreviewActions(item, zipDlUrl);
       return;
     }
     var url = '/api/raw?path=' + enc(item.path);
