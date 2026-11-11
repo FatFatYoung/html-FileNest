@@ -227,7 +227,11 @@ html-FileNest/
 
 ## Changelog
 
-**v1.4.1.1 (Latest)**
+**v1.4.1.2 (Latest)**
+- Security: `blockedExtensions` is now enforced on `/api/raw`, `/api/read`, `/api/archive-extract` and `/api/open`. Previously only the `/open`/`/reveal` file ops checked it, so blocked executables could still be downloaded, read or opened directly through the API.
+- `checkExtension` now ignores trailing dots/spaces before matching (prevents `evil.exe.` / `evil.exe ` bypasses, since Windows silently strips them).
+
+**v1.4.1.1**
 - Security: upgraded `xlsx` to SheetJS 0.20.3, fixing GHSA-4r6h-8v6p-xvw6 (prototype pollution, CVSS 7.8) and GHSA-5pgg-2g8v-p4x9 (ReDoS, CVE-2024-22363, CVSS 7.5).
 - The `xlsx` dependency is intentionally pinned to the SheetJS CDN tarball (`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`). npm's `xlsx` package is frozen at 0.18.5 and never receives these fixes — do NOT switch back to an npm version range, and do NOT merge Dependabot "upgrade xlsx" PRs (they reintroduce the vulnerabilities).
 

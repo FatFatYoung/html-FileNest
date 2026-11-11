@@ -25,7 +25,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '1.4.1.1';
+const SERVICE_VER = '1.4.1.2';
 const HOST        = '127.0.0.1';
 const INSTALL_DIR = 'C:\\html-FileNest';
 const EXE_PATH    = path.join(INSTALL_DIR, 'html-FileNest.exe');
@@ -611,6 +611,8 @@ function decodeTextBuffer(buf) {
 
 async function readTextFile(res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg);
+  const extCheck = checkExtension(file, cfg);
+  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   const s = await fs.promises.stat(file);
   if (!s.isFile()) throw new Error('not a file');
   const MAX = 5 * 1024 * 1024;
@@ -1018,6 +1020,10 @@ async function archiveExtract(req, res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg);
   const entry = String(q.entry || '');
   if (!entry) throw new Error('missing entry');
+  for (const p of [entry, file]) {
+    const extCheck = checkExtension(p, cfg);
+    if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
+  }
   const data = await extractEntryFromArchive(file, entry);
   // 猜测 MIME
   const ext = path.extname(entry).toLowerCase();
@@ -1203,6 +1209,11 @@ function streamFile(req, res, q, cfg) {
   return new Promise(async (resolve, reject) => {
     try {
       const file = resolveAllowedPath(q.path, cfg);
+      const extCheck = checkExtension(file, cfg);
+      if (!extCheck.ok) {
+        sendJson(res, 403, { ok: false, error: extCheck.reason });
+        return resolve();
+      }
       const st = await fs.promises.stat(file);
       if (!st.isFile()) throw new Error('not a file');
 
@@ -1376,11 +1387,15 @@ async function writeFileOp(res, data, cfg) {
 
 // —— 用系统默认程序打开文件/文件夹 ——
 async function openOp(res, data, cfg) {
+  const extCheck = checkExtension(data.path || '', cfg);
+  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   // 压缩包虚拟路径（path.ext::entry）→ 提取到临时文件后打开
   const zipSep = (data.path || '').indexOf('::');
   if (zipSep > 0) {
     const archivePath = data.path.substring(0, zipSep);
     const entry = data.path.substring(zipSep + 2);
+    const entryExtCheck = checkExtension(entry, cfg);
+    if (!entryExtCheck.ok) return sendJson(res, 403, { ok: false, error: entryExtCheck.reason });
     const archiveFull = resolveAllowedPath(archivePath, cfg);
     if (!fs.existsSync(archiveFull)) throw new Error('archive not found');
     const content = await extractEntryFromArchive(archiveFull, entry);
@@ -1504,7 +1519,9 @@ async function handleFileOp(op, q, res, cfg) {
 }
 
 function checkExtension(filePath, cfg) {
-  const ext = path.win32.extname(filePath).toLowerCase();
+  // 去掉尾部点/空格再取扩展名，防 "evil.exe." / "evil.exe " 绕过（Windows 会忽略尾部点空格）
+  const normalized = String(filePath).replace(/[. ]+$/, '');
+  const ext = path.win32.extname(normalized).toLowerCase();
   if (cfg.blockExecutables && ext && cfg.blockedExtensions.indexOf(ext) >= 0) {
     return { ok: false, reason: 'executable blocked: ' + ext };
   }
