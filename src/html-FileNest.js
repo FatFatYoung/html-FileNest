@@ -1082,11 +1082,22 @@ function extractPptText(buf) {
 }
 
 async function officePreview(res, q, cfg) {
-  const file = resolveAllowedPath(q.path, cfg);
-  const s = await fs.promises.stat(file);
-  if (!s.isFile()) throw new Error('not a file');
-  const buf = await fs.promises.readFile(file);
-  const ext = path.extname(file).toLowerCase();
+  // 支持 :: 虚拟路径（压缩包内文件）
+  let file, buf;
+  const zipSep = String(q.path || '').indexOf('::');
+  if (zipSep > 0) {
+    const archivePath = q.path.substring(0, zipSep);
+    const entry = q.path.substring(zipSep + 2);
+    file = resolveAllowedPath(archivePath, cfg);
+    buf = await extractEntryFromArchive(file, entry);
+    if (!buf) throw new Error('entry not found: ' + entry);
+  } else {
+    file = resolveAllowedPath(q.path, cfg);
+    const s = await fs.promises.stat(file);
+    if (!s.isFile()) throw new Error('not a file');
+    buf = await fs.promises.readFile(file);
+  }
+  const ext = path.extname(zipSep > 0 ? q.path.substring(zipSep + 2) : file).toLowerCase();
 
   if (ext === '.docx') {
     const r = await mammoth.convertToHtml({ buffer: buf });

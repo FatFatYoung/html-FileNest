@@ -936,6 +936,32 @@ body {
         zWrap.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
         zWrap.textContent = '加载中...';
         previewBodyEl.appendChild(zWrap);
+      } else if (['doc','docx','xls','xlsx','ppt','pptx'].indexOf(zExt) >= 0) {
+        // Office 文件：走 office-preview 转换
+        var zOLoad = document.createElement('div');
+        zOLoad.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
+        zOLoad.textContent = '加载中...';
+        previewBodyEl.appendChild(zOLoad);
+        var zOTok = ++previewToken;
+        apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
+          if (zOTok !== previewToken) return;
+          previewBodyEl.innerHTML = '';
+          if (r.type === 'html') {
+            var wrap = document.createElement('div');
+            wrap.className = 'office-html';
+            wrap.innerHTML = r.html;
+            previewBodyEl.appendChild(wrap);
+          } else if (r.type === 'xlsx') {
+            renderXlsxPreview(r);
+          } else if (r.type === 'pptx') {
+            renderPptxPreview(r);
+          }
+          addPreviewActions(item, zipDlUrl);
+        }).catch(function (e) {
+          if (zOTok !== previewToken) return;
+          previewBodyEl.innerHTML = '';
+          renderFallback(item, zipDlUrl, e.message);
+        });
       } else {
         var zWrap2 = document.createElement('div');
         zWrap2.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
