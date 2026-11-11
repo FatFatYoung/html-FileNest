@@ -227,7 +227,11 @@ html-FileNest/
 
 ## Changelog
 
-**v1.4.0 (Latest)**
+**v1.4.1.1 (Latest)**
+- Security: upgraded `xlsx` to SheetJS 0.20.3, fixing GHSA-4r6h-8v6p-xvw6 (prototype pollution, CVSS 7.8) and GHSA-5pgg-2g8v-p4x9 (ReDoS, CVE-2024-22363, CVSS 7.5).
+- The `xlsx` dependency is intentionally pinned to the SheetJS CDN tarball (`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`). npm's `xlsx` package is frozen at 0.18.5 and never receives these fixes — do NOT switch back to an npm version range, and do NOT merge Dependabot "upgrade xlsx" PRs (they reintroduce the vulnerabilities).
+
+**v1.4.0**
 - Multi-format archive support: added RAR, 7Z (via 7-Zip CLI), TAR (native parser), GZ/TGZ (zlib + TAR), JAR (JSZip) — all open as navigable folders like ZIP.
 - Unified archive interface: `/api/archive-list` and `/api/archive-extract` now dispatch by format (JSZip / TAR parser / 7z CLI).
 - Archive entries support preview, download, and system-handler open across all formats.

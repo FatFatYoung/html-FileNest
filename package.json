@@ -1,10 +1,14 @@
 {
   "name": "html-FileNest",
-  "version": "1.4.0.0",
+  "version": "1.4.1.1",
   "dependencies": {
     "jszip": "3.10.2",
     "mammoth": "1.13.0",
     "word-extractor": "^1.0.4",
-    "xlsx": "0.18.5"
-  }
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "//": [
+    "xlsx 钉 SheetJS CDN tarball（0.20.3）而非 npm 版本号：npm 上的 xlsx 永久停在 0.18.5，含未修复的 GHSA-4r6h-8v6p-xvw6（原型链污染 <0.19.3）与 GHSA-5pgg-2g8v-p4x9（ReDoS <0.20.2）。",
+    "不要把 xlsx 改回 npm 版本号或合并 Dependabot 对 xlsx 的版本升级 PR——那会把漏洞重新引入。"
+  ]
 }
