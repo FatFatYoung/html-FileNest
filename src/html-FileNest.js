@@ -1,5 +1,5 @@
 // html-FileNest.js — 网页版本地文件管理器
-// 项目：html-FileNest  版本：1.0.0.0
+// 项目：html-FileNest  版本：1.4.0.0
 // 双击无参数 => 部署并启动；--serve => 仅服务；--uninstall => 卸载
 
 const fs     = require('fs');
@@ -15,6 +15,7 @@ const XLSX = require('xlsx');
 const JSZip = require('jszip');
 const { spawn, spawnSync } = require('child_process');
 const { pipeline } = require('stream');
+const zlib = require('zlib');
 const { promisify } = require('util');
 
 const pipeAsync = promisify(pipeline);
@@ -24,7 +25,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '1.3.0.0';
+const SERVICE_VER = '1.4.0.0';
 const HOST        = '127.0.0.1';
 const INSTALL_DIR = 'C:\\html-FileNest';
 const EXE_PATH    = path.join(INSTALL_DIR, 'html-FileNest.exe');
@@ -787,50 +788,237 @@ function extractPsdComposite(buf) {
 }
 
 // —— ZIP 压缩包浏览：列出内容 ——
-async function archiveList(res, q, cfg) {
-  const file = resolveAllowedPath(q.path, cfg);
-  const s = await fs.promises.stat(file);
-  if (!s.isFile()) throw new Error('not a file');
-  const buf = await fs.promises.readFile(file);
-  const zip = await JSZip.loadAsync(buf);
-  const subdir = (q.subdir || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+// ============ 多格式压缩包支持 ============
+// 文件名编码解码：优先 UTF-8，有替换字符则回退 GB18030（中文 Windows 常见编码）
+function decodeArchiveName(buf) {
+  if (!buf || buf.length === 0) return '';
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const utf8 = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  const bad = (utf8.match(/\uFFFD/g) || []).length;
+  if (bad === 0) return utf8;
+  try {
+    return new TextDecoder('gb18030', { fatal: false }).decode(bytes);
+  } catch (_) { return utf8; }
+}
+
+function detectArchiveFormat(filePath) {
+  const ext = path.extname(filePath).toLowerCase().replace('.', '');
+  if (ext === 'zip' || ext === 'jar') return 'zip';
+  if (ext === 'tar') return 'tar';
+  if (ext === 'gz' || ext === 'tgz') return 'gz';
+  if (ext === 'rar' || ext === '7z' || ext === 'bz2' || ext === 'xz') return 'sevenzip';
+  return null;
+}
+
+// TAR 解析器：解析 512 字节文件头（USTAR + GNU 扩展）
+function parseTarEntries(buf) {
+  const entries = [];
+  let offset = 0;
+  let longName = null; // GNU 长文件名缓冲
+  let paxName = null;  // PaxHeaders 真实文件名缓冲
+  while (offset + 512 <= buf.length) {
+    const header = buf.slice(offset, offset + 512);
+    let allZero = true;
+    for (let i = 0; i < 512; i++) { if (header[i] !== 0) { allZero = false; break; } }
+    if (allZero) break;
+    // 文件名 (0-99)：编码自适应
+    let name = decodeArchiveName(header.slice(0, 100)).replace(/\0.*$/, '');
+    // USTAR 前缀 (345-499) 用于长路径
+    const prefix = decodeArchiveName(header.slice(345, 500)).replace(/\0.*$/, '');
+    if (prefix) name = prefix + '/' + name;
+    // 文件大小 (124-135, 八进制)
+    const sizeStr = header.slice(124, 136).toString('ascii').replace(/\0.*$/, '').trim();
+    const size = parseInt(sizeStr, 8) || 0;
+    // 类型标志 (156)：'5'=目录, '0'/'\0'=普通文件, 'L'=GNU长文件名, 'K'=GNU长链接名, 'x'/'g'=PaxHeaders
+    const typeFlag = String.fromCharCode(header[156]);
+    const dataStart = offset + 512;
+    // GNU 长文件名（type 'L'）：文件名存储在数据区，应用到下一个条目
+    if (typeFlag === 'L') {
+      longName = decodeArchiveName(buf.slice(dataStart, dataStart + size)).replace(/\0.*$/, '');
+      offset = dataStart + Math.ceil(size / 512) * 512;
+      continue;
+    }
+    // PaxHeaders（type 'x'/'g'）：解析 path= 真实文件名，应用到下一个条目
+    if (typeFlag === 'x' || typeFlag === 'g') {
+      const data = buf.slice(dataStart, dataStart + size);
+      const text = decodeArchiveName(data);
+      // PaxHeaders 格式: "LENGTH key=value\n" 每行
+      for (const line of text.split('\n')) {
+        const eqIdx = line.indexOf('=');
+        if (eqIdx < 0) continue;
+        const spaceIdx = line.indexOf(' ');
+        if (spaceIdx < 0 || spaceIdx > eqIdx) continue;
+        const key = line.slice(spaceIdx + 1, eqIdx);
+        if (key === 'path') {
+          paxName = line.slice(eqIdx + 1).replace(/\r$/, '');
+        }
+      }
+      offset = dataStart + Math.ceil(size / 512) * 512;
+      continue;
+    }
+    // 应用 GNU 长文件名或 PaxHeaders 真实文件名
+    if (longName) { name = longName; longName = null; }
+    if (paxName) { name = paxName; paxName = null; }
+    const isDir = typeFlag === '5' || name.endsWith('/');
+    if (name !== '.' && name !== './' && name !== '' && !name.startsWith('PaxHeaders.')) {
+      entries.push({ name: name, size: isDir ? 0 : size, type: isDir ? 'dir' : 'file', dataOffset: dataStart });
+    }
+    offset = dataStart + Math.ceil(size / 512) * 512;
+  }
+  return entries;
+}
+
+function extractTarEntry(buf, entryPath) {
+  const norm = entryPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const entries = parseTarEntries(buf);
+  const target = entries.find(e => e.name === norm && e.type === 'file');
+  if (!target) throw new Error('entry not found: ' + entryPath);
+  return buf.slice(target.dataOffset, target.dataOffset + target.size);
+}
+
+// 7z CLI 集成（RAR / 7Z / 其他 7z 支持的格式）
+function get7zExe() {
+  const known = ['C:\\Program Files\\7-Zip\\7z.exe', 'C:\\Program Files (x86)\\7-Zip\\7z.exe'];
+  for (const p of known) { try { if (fs.existsSync(p)) return p; } catch (_) {} }
+  return '7z';
+}
+
+function run7z(args) {
+  return new Promise((resolve, reject) => {
+    const exe = get7zExe();
+    const proc = spawn(exe, args, { windowsHide: true });
+    const chunks = [], errChunks = [];
+    proc.stdout.on('data', d => chunks.push(d));
+    proc.stderr.on('data', d => errChunks.push(d));
+    proc.on('close', code => {
+      // 7z exit code 1 = warning (非致命)
+      if (code !== 0 && code !== 1) return reject(new Error('7z exit ' + code + ': ' + Buffer.concat(errChunks).toString('utf-8')));
+      resolve(Buffer.concat(chunks));
+    });
+    proc.on('error', reject);
+  });
+}
+
+async function list7zEntries(filePath) {
+  const out = await run7z(['l', '-slt', filePath]);
+  // 7z 输出在中文 Windows 下可能是 GBK/GB18030 编码
+  const text = decodeArchiveName(out);
+  const entries = [];
+  // ---------- 只在头部和条目之间出现一次；条目之间用空行分隔
+  const sepIdx = text.indexOf('----------');
+  const afterSep = sepIdx >= 0 ? text.slice(sepIdx + 10) : text;
+  // 按空行分隔条目（兼容 \r\n 和 \n）
+  const sections = afterSep.split(/\r?\n\s*\r?\n/);
+  for (const section of sections) {
+    const lines = section.split(/\r?\n/);
+    let p = '', size = 0, isDir = false;
+    for (const line of lines) {
+      if (line.startsWith('Path = ')) p = line.slice(7);
+      else if (line.startsWith('Size = ')) size = parseInt(line.slice(7)) || 0;
+      else if (line.startsWith('Attributes = ')) isDir = line.slice(13, 14) === 'D';
+    }
+    if (p) entries.push({ name: p, size: isDir ? 0 : size, type: isDir ? 'dir' : 'file' });
+  }
+  return entries;
+}
+
+async function extract7zEntry(filePath, entryPath) {
+  return await run7z(['x', filePath, '-so', entryPath]);
+}
+
+// 统一提取接口：按格式分发
+async function extractEntryFromArchive(filePath, entryPath) {
+  const format = detectArchiveFormat(filePath);
+  if (!format) throw new Error('unsupported archive format');
+  if (format === 'zip') {
+    const buf = await fs.promises.readFile(filePath);
+    const zip = await JSZip.loadAsync(buf);
+    const target = zip.file(entryPath);
+    if (!target) throw new Error('entry not found: ' + entryPath);
+    return await target.async('nodebuffer');
+  }
+  if (format === 'tar') {
+    const buf = await fs.promises.readFile(filePath);
+    return extractTarEntry(buf, entryPath);
+  }
+  if (format === 'gz') {
+    const buf = await fs.promises.readFile(filePath);
+    const decompressed = zlib.gunzipSync(buf);
+    if (decompressed.length >= 262 && decompressed.slice(257, 262).toString('ascii') === 'ustar') {
+      return extractTarEntry(decompressed, entryPath);
+    }
+    return decompressed; // 单文件 GZ
+  }
+  if (format === 'sevenzip') {
+    return await extract7zEntry(filePath, entryPath);
+  }
+  throw new Error('unsupported archive format');
+}
+
+// 平铺条目 → 虚拟目录树（共用逻辑）
+function buildArchiveItems(rawEntries, subdir) {
   const items = [];
   const seen = {};
-  for (const name of Object.keys(zip.files)) {
-    const entry = zip.files[name];
-    const norm = name.replace(/\\/g, '/');
-    // 过滤子目录
+  for (const entry of rawEntries) {
+    const norm = entry.name.replace(/\\/g, '/');
     if (subdir && !norm.startsWith(subdir + '/')) continue;
     const rel = subdir ? norm.slice(subdir.length + 1) : norm;
     const seg = rel.split('/')[0];
-    if (!seg || seen[seg]) continue;
+    if (!seg || seg === '.' || seg === '..' || seen[seg]) continue;
     seen[seg] = true;
-    const isDir = rel.endsWith('/') || entry.dir || rel.indexOf('/') > 0;
+    const isDir = entry.type === 'dir' || rel.endsWith('/') || rel.indexOf('/') > 0;
     const fullPath = subdir ? subdir + '/' + seg : seg;
-    items.push({
-      name: seg,
-      type: isDir ? 'dir' : 'file',
-      entry: isDir ? fullPath + '/' : fullPath,
-      size: isDir ? 0 : entry._data ? entry._data.uncompressedSize : 0
-    });
+    items.push({ name: seg, type: isDir ? 'dir' : 'file', entry: isDir ? fullPath + '/' : fullPath, size: isDir ? 0 : (entry.size || 0) });
   }
   items.sort((a, b) => {
     if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
+  return items;
+}
+
+async function archiveList(res, q, cfg) {
+  const file = resolveAllowedPath(q.path, cfg);
+  const s = await fs.promises.stat(file);
+  if (!s.isFile()) throw new Error('not a file');
+  const format = detectArchiveFormat(file);
+  if (!format) throw new Error('unsupported archive format');
+  const subdir = (q.subdir || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  let rawEntries = [];
+  if (format === 'zip') {
+    const buf = await fs.promises.readFile(file);
+    const zip = await JSZip.loadAsync(buf);
+    for (const name of Object.keys(zip.files)) {
+      const entry = zip.files[name];
+      const norm = name.replace(/\\/g, '/');
+      rawEntries.push({ name: norm, size: entry._data ? entry._data.uncompressedSize : 0, type: (entry.dir || norm.endsWith('/')) ? 'dir' : 'file' });
+    }
+  } else if (format === 'tar') {
+    const buf = await fs.promises.readFile(file);
+    rawEntries = parseTarEntries(buf).map(e => ({ name: e.name, size: e.size, type: e.type }));
+  } else if (format === 'gz') {
+    const buf = await fs.promises.readFile(file);
+    let decompressed;
+    try { decompressed = zlib.gunzipSync(buf); } catch (e) { throw new Error('gzip decompress failed: ' + e.message); }
+    if (decompressed.length >= 262 && decompressed.slice(257, 262).toString('ascii') === 'ustar') {
+      rawEntries = parseTarEntries(decompressed).map(e => ({ name: e.name, size: e.size, type: e.type }));
+    } else {
+      const baseName = path.basename(file).replace(/\.t?gz$/i, '') || 'content';
+      rawEntries = [{ name: baseName, size: decompressed.length, type: 'file' }];
+    }
+  } else if (format === 'sevenzip') {
+    rawEntries = await list7zEntries(file);
+  }
+  const items = buildArchiveItems(rawEntries, subdir);
   sendJson(res, 200, { ok: true, subdir: subdir, items });
 }
 
-// —— ZIP 压缩包提取单个文件 ——
+// —— 多格式压缩包提取单个文件 ——
 async function archiveExtract(req, res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg);
   const entry = String(q.entry || '');
   if (!entry) throw new Error('missing entry');
-  const buf = await fs.promises.readFile(file);
-  const zip = await JSZip.loadAsync(buf);
-  const target = zip.file(entry);
-  if (!target) throw new Error('entry not found: ' + entry);
-  const data = await target.async('nodebuffer');
+  const data = await extractEntryFromArchive(file, entry);
   // 猜测 MIME
   const ext = path.extname(entry).toLowerCase();
   const mimeMap = {
@@ -1177,19 +1365,14 @@ async function writeFileOp(res, data, cfg) {
 
 // —— 用系统默认程序打开文件/文件夹 ——
 async function openOp(res, data, cfg) {
-  // ZIP 虚拟路径（path.zip::entry）→ 提取到临时文件后打开
+  // 压缩包虚拟路径（path.ext::entry）→ 提取到临时文件后打开
   const zipSep = (data.path || '').indexOf('::');
   if (zipSep > 0) {
-    const zipPath = data.path.substring(0, zipSep);
+    const archivePath = data.path.substring(0, zipSep);
     const entry = data.path.substring(zipSep + 2);
-    const zipFull = resolveAllowedPath(zipPath, cfg);
-    if (!fs.existsSync(zipFull)) throw new Error('zip not found');
-    const JSZip = (await import('jszip')).default;
-    const buf = await fs.promises.readFile(zipFull);
-    const zip = await JSZip.loadAsync(buf);
-    const f = zip.file(entry);
-    if (!f) throw new Error('entry not found: ' + entry);
-    const content = await f.async('nodebuffer');
+    const archiveFull = resolveAllowedPath(archivePath, cfg);
+    if (!fs.existsSync(archiveFull)) throw new Error('archive not found');
+    const content = await extractEntryFromArchive(archiveFull, entry);
     const os = await import('os');
     const tmpDir = path.join(os.tmpdir(), 'html-FileNest-open');
     await fs.promises.mkdir(tmpDir, { recursive: true });

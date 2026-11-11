@@ -9,8 +9,8 @@ html-FileNest is a lightweight web-based file manager that runs locally on Windo
 ### Key Features
 
 - 📂 **Full File Management** — Browse, create, rename, copy, move, delete, and upload files/folders
-- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code (UTF-8/UTF-16/GB18030), Office (doc/docx/xls/xlsx/ppt/pptx), Design (PSD/PSB/AI), ZIP archive browsing
-- 🗂️ **ZIP as Folder** — Click a ZIP to browse its contents like a regular folder in the main file list; navigate subdirectories, preview/download files inside; ZIP contents are read-only (no rename/delete/copy/move) but support preview, download, and open with system handler
+- 👁️ **Rich Preview** — Images, videos, audio, PDF, text/code (UTF-8/UTF-16/GB18030), Office (doc/docx/xls/xlsx/ppt/pptx), Design (PSD/PSB/AI), Archive browsing (ZIP/JAR/TAR/GZ/TGZ/RAR/7Z/BZ2/XZ)
+- 🗂️ **Archives as Folder** — Click a ZIP/JAR/TAR/GZ/TGZ/RAR/7Z to browse its contents like a regular folder in the main file list; navigate subdirectories, preview/download files inside; archive contents are read-only (no rename/delete/copy/move) but support preview, download, and open with system handler
 - 📂 **System Open** — Open any file or folder with its default system application
 - 🌐 **Customizable Web UI** — Standalone `index.html` for easy personalization; dark-themed grid/list views, filename search, directory tree sidebar, sorting, and grouping
 - 🔒 **Secure** — Whitelist root paths, block executables, local-origin enforcement, optional auth token
@@ -94,8 +94,8 @@ All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `
 | GET | `/api/raw?path=<abs>&download=1` | Download file as attachment |
 | GET | `/api/read?path=<abs>` | Read text file content (max 5 MB) |
 | GET | `/api/office-preview?path=<abs>` | Office/Design preview (doc/docx/xls/xlsx/ppt/pptx/psd/psb/ai) |
-| GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List ZIP archive contents (virtual directory) |
-| GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from ZIP archive |
+| GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List archive contents (ZIP/JAR/TAR/GZ/TGZ/RAR/7Z, virtual directory) |
+| GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from archive (multi-format) |
 | POST | `/api/mkdir` | Create folder `{path, name}` |
 | POST | `/api/rename` | Rename `{path, newName}` |
 | POST | `/api/rm` | Delete `{path, recursive?}` |
@@ -171,11 +171,11 @@ Config values support `${VAR}` syntax for dynamic expansion:
 - **Filename search** — Filter files in the current directory from the toolbar
 - **Sorting** — Sort by name, size, modified time, or type (ascending/descending)
 - **Grouping** — Group files by category (folders, documents, images, videos, etc.)
-- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office (doc/docx/xls/xlsx/ppt/pptx), Design (PSD/PSB/AI); click ZIP to browse like a folder (navigate subdirectories, preview/download files inside); drag the left edge of the preview panel to resize
+- **File preview** — Single-click to preview images, video, audio, PDF, text/code, Office (doc/docx/xls/xlsx/ppt/pptx), Design (PSD/PSB/AI); click archives (ZIP/JAR/TAR/GZ/RAR/7Z) to browse like a folder (navigate subdirectories, preview/download files inside); drag the left edge of the preview panel to resize
 - **Adaptive layout** — Filenames wrap naturally at any zoom level; list columns scale with font size
 - **Preview header** — 📂 open with system handler + ⬇ download button
 - **Open with system handler** — Double-click or use the 📂 button in the preview header
-- **Context menu** — Right-click for Open, Preview, Reveal, Rename, Copy to…, Move to…, Delete; ZIP files show Preview / Download / Open with system handler
+- **Context menu** — Right-click for Open, Preview, Reveal, Rename, Copy to…, Move to…, Delete; archive files show Preview / Download / Open with system handler
 - **Drag & drop upload** — Drag files into the window to upload
 - **Keyboard shortcuts** — `Backspace` (up), `Alt+←/→` (back/forward), `F5` (refresh), `Ctrl+Shift+N` (new folder), `Ctrl+U` (upload)
 
@@ -227,7 +227,12 @@ html-FileNest/
 
 ## Changelog
 
-**v1.3.0 (Latest)**
+**v1.4.0 (Latest)**
+- Multi-format archive support: added RAR, 7Z (via 7-Zip CLI), TAR (native parser), GZ/TGZ (zlib + TAR), JAR (JSZip) — all open as navigable folders like ZIP.
+- Unified archive interface: `/api/archive-list` and `/api/archive-extract` now dispatch by format (JSZip / TAR parser / 7z CLI).
+- Archive entries support preview, download, and system-handler open across all formats.
+
+**v1.3.0**
 - Added legacy Office format preview: `.doc` (text extraction via word-extractor), `.xls` (via SheetJS), `.ppt` (binary text scan).
 - Fixed non-ASCII (Chinese/CJK) filename preview failure: `Content-Disposition` header now uses RFC 5987 dual encoding to avoid `ERR_INVALID_CHAR`.
 - Extension normalization: multi-dot filenames (`.tar.gz` → `gz`) via `lastIndexOf('.')`.
@@ -266,7 +271,8 @@ html-FileNest/
 | [mammoth](https://www.npmjs.com/package/mammoth) | DOCX → HTML conversion for document preview | BSD-2-Clause |
 | [word-extractor](https://www.npmjs.com/package/word-extractor) | Legacy .doc (OLE2) text extraction | MIT |
 | [SheetJS (xlsx)](https://sheetjs.com) | XLSX/XLS spreadsheet parsing for table preview | Apache-2.0 |
-| [JSZip](https://stuk.github.io/jszip/) | ZIP archive browsing/extract + PPTX slide text parsing | MIT/GPL-3.0 |
+| [JSZip](https://stuk.github.io/jszip/) | ZIP/JAR archive browsing/extract + PPTX slide text parsing | MIT/GPL-3.0 |
+| [7-Zip](https://www.7-zip.org) | RAR/7Z/BZ2/XZ archive listing & extraction (CLI, runtime dependency) | LGPL-2.1+ |
 
 > **Note**: Office document "open with system handler" uses the OS file association (`explorer.exe`/`cmd /c start`) — no third-party Office software is bundled or required. SheetJS is pinned to v0.18.5 (Apache-2.0); newer versions from the SheetJS CDN use a different license.
 

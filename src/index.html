@@ -699,8 +699,8 @@ body {
     }
     div.onclick = function () {
       selectItem(item);
-      // ZIP 文件单击进入压缩包（像文件夹一样）
-      if (item.type === 'file' && normExt(item.ext) === 'zip' && !item._zip) {
+      // 压缩包文件单击进入（像文件夹一样）
+      if (item.type === 'file' && !item._zip && ['zip','jar','rar','7z','tar','gz','tgz','bz2','xz'].indexOf(normExt(item.ext)) >= 0) {
         navTo({ path: item.path + '::', source: state.current.source });
         return;
       }
@@ -847,6 +847,12 @@ body {
   }
   // 用系统默认程序打开文件（后端 /open，内部走 explorer.exe，失败降级 rundll32）
   function openWithSystem(item) {
+    // 防御：path 含 :: 但 _zip 标记丢失时自动提取
+    if (!item._zip && item.path && item.path.indexOf('::') > 0) {
+      var _s = item.path.indexOf('::');
+      item._zip = item.path.substring(0, _s);
+      item._zipEntry = item.path.substring(_s + 2);
+    }
     // ZIP 内文件走 /api/open（POST，支持 :: 虚拟路径，自动提取临时文件）
     if (item._zip) {
       fetch('/api/open', {
@@ -873,13 +879,24 @@ body {
     previewTitleEl.textContent = item.name;
     previewBodyEl.innerHTML = '';
     previewEl.classList.add('open');
-    // —— ZIP 内文件：用 archive-extract 预览 ——
+    // 防御：如果 _zip 标记丢失但 path 含 ::，自动提取
+    if (!item._zip && item.path && item.path.indexOf('::') > 0) {
+      var _sep = item.path.indexOf('::');
+      item._zip = item.path.substring(0, _sep);
+      item._zipEntry = item.path.substring(_sep + 2);
+    }
+    // —— 压缩包内文件：用 archive-extract 预览 ——
     if (item._zip) {
       var zipUrl = '/api/archive-extract?path=' + enc(item._zip) + '&entry=' + enc(item._zipEntry);
       var zipDlUrl = zipUrl;
       var zExt = normExt(item.ext);
       var zIsImg = ['png','jpg','jpeg','jpe','jfif','gif','bmp','webp','svg','ico','avif','apng','tiff','tif','heic','heif'].indexOf(zExt) >= 0;
       var zIsVid = ['mp4','webm','ogg','mov','avi','mkv'].indexOf(zExt) >= 0;
+      var zIsText = ['txt','text','md','markdown','json','json5','jsonc','js','mjs','cjs',
+        'ts','jsx','tsx','html','htm','css','scss','less','xml','yml','yaml','toml','ini',
+        'conf','cfg','env','log','csv','tsv','sh','bash','bat','cmd','ps1','py','rb','go',
+        'rs','java','c','h','cpp','hpp','cs','php','sql','vue','svelte','lua','pl','kt',
+        'swift','dart','r','tex','rst','asm','s','gradle','properties','lock','diff','patch'].indexOf(zExt) >= 0;
       if (zIsImg) {
         var zTok = ++previewToken;
         var zImg = document.createElement('img');
@@ -897,12 +914,33 @@ body {
         zVid.controls = true;
         zVid.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
         previewBodyEl.appendChild(zVid);
-      } else {
-        // 文本类尝试读取预览
+      } else if (zIsText) {
+        // 文本类：拉取内容并显示
+        var zTok2 = ++previewToken;
+        fetch(zipUrl, { credentials: 'same-origin' }).then(function (r) {
+          if (!r.ok) throw new Error(r.status);
+          return r.text();
+        }).then(function (txt) {
+          if (zTok2 !== previewToken) return;
+          var pre = document.createElement('pre');
+          pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;padding:12px;color:var(--text);background:var(--bg-2);border-radius:6px;max-height:70vh;overflow:auto;margin:0;';
+          pre.textContent = txt;
+          previewBodyEl.innerHTML = '';
+          previewBodyEl.appendChild(pre);
+        }).catch(function (e) {
+          if (zTok2 !== previewToken) return;
+          previewBodyEl.innerHTML = '';
+          renderFallback(item, zipDlUrl, '无法读取: ' + e.message);
+        });
         var zWrap = document.createElement('div');
         zWrap.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-        zWrap.textContent = 'ZIP 内文件 · ' + formatSize(item.size) + ' · 双击下载';
+        zWrap.textContent = '加载中...';
         previewBodyEl.appendChild(zWrap);
+      } else {
+        var zWrap2 = document.createElement('div');
+        zWrap2.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
+        zWrap2.textContent = '压缩包内文件 · ' + formatSize(item.size) + ' · 点击下载按钮获取';
+        previewBodyEl.appendChild(zWrap2);
       }
       addPreviewActions(item, zipDlUrl);
       return;
@@ -917,7 +955,7 @@ body {
     var isOffice = ['doc','docx','xls','xlsx','ppt','pptx'].indexOf(ext) >= 0;
     var isDesign = ['psd','psb','ai'].indexOf(ext) >= 0;
     var isZip = ext === 'zip';
-    var isArchive = ['zip','rar','7z','tar','gz','bz2'].indexOf(ext) >= 0;
+    var isArchive = ['zip','jar','rar','7z','tar','gz','tgz','bz2','xz'].indexOf(ext) >= 0;
     // 放宽文本扩展名列表：常见文本/代码/配置扩展名均尝试文本预览
     var isText  = ['txt','text','md','markdown','json','json5','jsonc','js','mjs','cjs',
       'ts','jsx','tsx','html','htm','css','scss','less','xml','yml','yaml','toml','ini',
@@ -1066,7 +1104,7 @@ body {
         renderFallback(item, dlUrl, e.message);
       });
     } else if (isArchive) {
-      // ZIP 已在列表单击时导航进入；RAR/7z 等显示系统打开提示
+      // 压缩包已在列表单击时导航进入；此处理预览窗格直接打开的情况
       previewBodyEl.innerHTML = '';
       renderFallback(item, dlUrl, null);
     } else if (isText || noExt || item.size < 2 * 1048576) {
@@ -1185,7 +1223,13 @@ body {
       contextMenuEl.appendChild(d);
     };
     if (item) {
-      // —— ZIP 内文件：预览/下载/系统打开 ——
+      // 防御：path 含 :: 但 _zip 标记丢失时自动提取
+      if (!item._zip && item.path && item.path.indexOf('::') > 0) {
+        var _s = item.path.indexOf('::');
+        item._zip = item.path.substring(0, _s);
+        item._zipEntry = item.path.substring(_s + 2);
+      }
+      // —— 压缩包内文件：预览/下载/系统打开 ——
       if (item._zip) {
         if (item.type !== 'dir') {
           add('预览', '👁️', function () { previewFile(item); });
@@ -1408,6 +1452,12 @@ body {
   $('preview-download').onclick = function () {
     var item = state.previewItem;
     if (!item) return;
+    // 防御：path 含 :: 但 _zip 标记丢失时自动提取
+    if (!item._zip && item.path && item.path.indexOf('::') > 0) {
+      var _s = item.path.indexOf('::');
+      item._zip = item.path.substring(0, _s);
+      item._zipEntry = item.path.substring(_s + 2);
+    }
     var a = document.createElement('a');
     if (item._zip) {
       a.href = '/api/archive-extract?path=' + enc(item._zip) + '&entry=' + enc(item._zipEntry);
