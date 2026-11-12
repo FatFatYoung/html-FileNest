@@ -1360,6 +1360,10 @@ function getMime(ext) {
     mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac',
     m4a: 'audio/mp4', ogg: 'audio/ogg', aac: 'audio/aac',
     pdf: 'application/pdf',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    doc: 'application/msword', xls: 'application/vnd.ms-excel', ppt: 'application/vnd.ms-powerpoint',
     zip: 'application/zip', '7z': 'application/x-7z-compressed',
     rar: 'application/vnd.rar', gz: 'application/gzip', tar: 'application/x-tar'
   };
