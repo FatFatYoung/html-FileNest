@@ -931,7 +931,16 @@ async function list7zEntries(filePath) {
 
 async function extract7zEntry(filePath, entryPath) {
   // -spd: 禁用通配符匹配（entryPath 含 * ? 时按字面处理）; -y: 假设全部提示为是; --: 终止选项解析（防 entryPath 以 - 开头被当选项）
-  return await run7z(['x', filePath, '-so', '-spd', '-y', '--', entryPath]);
+  const out = await run7z(['x', filePath, '-so', '-spd', '-y', '--', entryPath]);
+  if (!out.length) {
+    // 空输出：区分"真实空文件"与"条目不存在"（-spd 后通配符不再匹配会静默给出空输出）
+    const entries = await list7zEntries(filePath);
+    const norm = entryPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!entries.some(e => e.name.replace(/\\/g, '/') === norm && e.type === 'file')) {
+      throw new Error('entry not found: ' + entryPath);
+    }
+  }
+  return out;
 }
 
 // 统一提取接口：按格式分发
