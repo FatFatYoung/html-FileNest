@@ -171,12 +171,20 @@ async function install() {
         if (fs.existsSync(cand) && fs.statSync(cand).isFile()) { uiSrc = cand; break; }
       } catch (e) {}
     }
-    if (uiSrc && path.resolve(uiSrc).toLowerCase() !== path.resolve(uiDst).toLowerCase()) {
-      fs.copyFileSync(uiSrc, uiDst);
-    } else if (!uiSrc && !fs.existsSync(uiDst)) {
-      // 自动部署：从内嵌资源释放 index.html（构建时注入，用户可在此文件基础上自由修改）
-      fs.writeFileSync(uiDst, UI_HTML_DEPLOY, 'utf8');
-      log('index.html 已自动部署到 ' + uiDst);
+    const uiSamePath = uiSrc && path.resolve(uiSrc).toLowerCase() === path.resolve(uiDst).toLowerCase();
+    // 安装/升级必须刷新 UI（修复：旧 index.html 残留 + 装新版本不覆盖，导致界面永不更新）。
+    // 从部署位置直接启动（uiSrc === uiDst）时不动现有文件，保留用户个性化修改。
+    if (!uiSamePath) {
+      const uiNew = uiSrc ? fs.readFileSync(uiSrc, 'utf8') : UI_HTML_DEPLOY;
+      const uiOld = fs.existsSync(uiDst) ? fs.readFileSync(uiDst, 'utf8') : null;
+      if (uiOld !== uiNew) {
+        if (uiOld !== null) {
+          // 旧 UI 先备份为 index.html.bak（用户个性化修改可找回）
+          try { fs.writeFileSync(uiDst + '.bak', uiOld, 'utf8'); } catch (e) {}
+        }
+        fs.writeFileSync(uiDst, uiNew, 'utf8');
+        log('index.html 已部署到 ' + uiDst + (uiOld !== null ? '（旧文件备份为 index.html.bak）' : ''));
+      }
     }
   }
   if (!fs.existsSync(CONFIG_PATH)) {
@@ -223,7 +231,11 @@ function doUninstall() {
   [VBS_PATH, PFX_PATH, CER_PATH].forEach(f => {
     try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
   });
-  showMsg('卸载完成', 'html-FileNest.exe 本体仍在 ' + INSTALL_DIR, 'Information');
+  // 界面文件随卸载清理（含升级备份 index.html.bak），避免残留旧 UI 毒害下次安装
+  [path.join(INSTALL_DIR, 'index.html'), path.join(INSTALL_DIR, 'index.html.bak')].forEach(f => {
+    try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
+  });
+  showMsg('卸载完成', 'html-FileNest.exe 本体仍在 ' + INSTALL_DIR + '，index.html 已清理', 'Information');
 }
 
 // ============ 安全校验 ============
