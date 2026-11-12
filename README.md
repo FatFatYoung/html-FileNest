@@ -227,6 +227,10 @@ html-FileNest/
 
 ## Changelog
 
+**Unreleased**
+- License compliance: full third-party license texts (Bun, JSZip, mammoth, word-extractor, SheetJS, 7-Zip notice) are now embedded inside the executable. Run `html-FileNest.exe --licenses` to display them at any time.
+- Docs: corrected the SheetJS license note — v0.20.3 (SheetJS CDN) is Apache-2.0, same license as before; the previous "newer versions use a different license" statement was outdated.
+
 **v1.4.2.1 (Latest)**
 - Security: fixed command injection in `/api/open`. The endpoint used `cmd.exe /c start`, where `cmd.exe` interprets shell metacharacters (`&`, `|`, …) — a crafted filename could execute arbitrary commands. It now launches files via `explorer.exe` (argv passing, no shell interpretation) with a `rundll32 url.dll,FileProtocolHandler` fallback, matching the `/open` file-op implementation.
 - `/api/open` now rejects paths/entries containing Windows-invalid filename characters (quotes, `<>|*?`, control chars) as an extra hardening layer. Legal metacharacters (`&`, `%`, …) remain allowed since they are inert in argv passing.
@@ -278,7 +282,7 @@ html-FileNest/
 | Project | Role | License |
 |---------|------|---------|
 | [Node.js](https://nodejs.org) | Runtime environment (fs, http, https, crypto, child_process, etc.) | MIT |
-| [Bun](https://bun.sh) | Recommended build toolchain & single-EXE compiler | MIT / Apache-2.0 |
+| [Bun](https://bun.sh) | Recommended build toolchain & single-EXE compiler | MIT (bundles JavaScriptCore, LGPL-2) |
 | [pkg](https://github.com/vercel/pkg) | Alternative Node.js-to-EXE compiler | MIT |
 | [mammoth](https://www.npmjs.com/package/mammoth) | DOCX → HTML conversion for document preview | BSD-2-Clause |
 | [word-extractor](https://www.npmjs.com/package/word-extractor) | Legacy .doc (OLE2) text extraction | MIT |
@@ -286,7 +290,7 @@ html-FileNest/
 | [JSZip](https://stuk.github.io/jszip/) | ZIP/JAR archive browsing/extract + PPTX slide text parsing | MIT/GPL-3.0 |
 | [7-Zip](https://www.7-zip.org) | RAR/7Z/BZ2/XZ archive listing & extraction (CLI, runtime dependency) | LGPL-2.1+ |
 
-> **Note**: Office document "open with system handler" uses the OS file association (`explorer.exe`/`cmd /c start`) — no third-party Office software is bundled or required. SheetJS is pinned to v0.18.5 (Apache-2.0); newer versions from the SheetJS CDN use a different license.
+> **Note**: Office document "open with system handler" uses the OS file association (`explorer.exe`/`cmd /c start`) — no third-party Office software is bundled or required. SheetJS is pinned to v0.20.3 from the official SheetJS CDN (Apache-2.0). Full third-party license texts are embedded in the executable and can be displayed with `html-FileNest.exe --licenses`.
 
 ### Standards & Specifications
 

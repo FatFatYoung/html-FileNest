@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, unlinkSync } from 'fs';
 
 const HTML = readFileSync('./src/index.html', 'utf8');
 const JS_SRC = readFileSync('./src/html-FileNest.js', 'utf8');
+const NOTICES = readFileSync('./THIRD-PARTY-NOTICES.txt', 'utf8');
 
 // 转义模板字符串中的特殊字符
 const escaped = HTML
@@ -12,9 +13,15 @@ const escaped = HTML
   .replace(/`/g, '\\`')
   .replace(/\$\{/g, '\\${');
 
-const JS_BUNDLED = JS_SRC.replace(
+let JS_BUNDLED = JS_SRC.replace(
   '__EMBEDDED_UI_HTML__',
   '`' + escaped + '`'
+);
+
+// 注入第三方许可全文（JSON 字符串安全转义）
+JS_BUNDLED = JS_BUNDLED.replace(
+  '__EMBEDDED_NOTICES__',
+  JSON.stringify(NOTICES)
 );
 
 // 写临时文件编译

@@ -326,6 +326,9 @@ function findUIFile() {
 // ★ 部署资源：install() 时自动释放 index.html 到 INSTALL_DIR（用户可自行修改）
 const UI_HTML_DEPLOY = __EMBEDDED_UI_HTML__;
 
+// ★ 第三方开源许可全文（嵌入 exe，--licenses 可随时查看）
+const THIRD_PARTY_NOTICES = __EMBEDDED_NOTICES__;
+
 let _uiCache = null, _uiMtime = 0, _uiPath = null;
 function loadUI() {
   const f = findUIFile();
@@ -1830,7 +1833,8 @@ function log(s) { try { console.log('[html-FileNest] ' + s); } catch (e) {} }
 
 // ============ 入口分发（放文件末尾，确保所有 let 初始化完成后再执行） ============
 const argv = process.argv.slice(2);
-if (argv.includes('--serve'))          runServer();
+if (argv.includes('--licenses'))       console.log(THIRD_PARTY_NOTICES);
+else if (argv.includes('--serve'))     runServer();
 else if (argv.includes('--uninstall')) doUninstall();
 else                                   doAuto().catch(e => {
   showMsg(APP_NAME + ' 部署失败', String(e && e.message || e), 'Error');
