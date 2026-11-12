@@ -1341,6 +1341,11 @@ async function renameOp(res, data, cfg) {
   }
   const dst = path.win32.join(path.win32.dirname(src), name);
   if (dst === src) return sendJson(res, 200, { ok: true, path: dst });
+  const st = await fs.promises.stat(src);
+  if (!st.isDirectory()) {
+    const extCheck = checkExtension(dst, cfg);
+    if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
+  }
   await fs.promises.rename(src, dst);
   sendJson(res, 200, { ok: true, path: dst });
 }
