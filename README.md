@@ -227,7 +227,10 @@ html-FileNest/
 
 ## Changelog
 
-**v1.4.2.2 (Latest)**
+**v1.4.2.3 (Latest)**
+- Security: archive extraction hardening (three fixes). (1) `extract7zEntry` (7z/RAR extraction) now passes `-spd -y --`: wildcard characters in entry names are matched literally and cannot redirect extraction, and entry names starting with `-` cannot be parsed as 7-Zip options. (2) TAR extraction now validates `dataOffset + size` against the buffer before slicing — a TAR header declaring an out-of-range size used to be silently truncated by `Buffer.slice`, producing a corrupted download with no error; it is now rejected as `corrupted archive: entry size out of range`. (3) Single-file GZ extraction now verifies the requested entry name against the virtual entry name — previously the `entryPath` argument was ignored and the entire decompressed content was returned for any request.
+
+**v1.4.2.2**
 - Security: fixed HTML injection in Office document preview (P1 #3). Preview HTML (mammoth output for DOCX) was assigned to `innerHTML` unsanitized — a crafted document could execute script in the app origin. All preview HTML now passes DOMPurify 3.4.17 (vendored pinned copy); the file-tree error message (which can embed hostile filenames) is sanitized as well.
 - License compliance: full third-party license texts (Bun, JSZip, mammoth, word-extractor, SheetJS, DOMPurify, 7-Zip notice) are now embedded inside the executable. Run `html-FileNest.exe --licenses` to display them at any time.
 - Docs: corrected the SheetJS license note — v0.20.3 (SheetJS CDN) is Apache-2.0, same license as before; the previous "newer versions use a different license" statement was outdated.

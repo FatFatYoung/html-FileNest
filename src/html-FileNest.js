@@ -25,7 +25,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '1.4.2.2';
+const SERVICE_VER = '1.4.2.3';
 const HOST        = '127.0.0.1';
 const INSTALL_DIR = 'C:\\html-FileNest';
 const EXE_PATH    = path.join(INSTALL_DIR, 'html-FileNest.exe');
@@ -878,6 +878,8 @@ function extractTarEntry(buf, entryPath) {
   const entries = parseTarEntries(buf);
   const target = entries.find(e => e.name === norm && e.type === 'file');
   if (!target) throw new Error('entry not found: ' + entryPath);
+  // 越界校验：声明 size 超出实际缓冲区时 Buffer.slice 会静默截断 → 无声数据损坏，显式拒绝
+  if (target.dataOffset + target.size > buf.length) throw new Error('corrupted archive: entry size out of range');
   return buf.slice(target.dataOffset, target.dataOffset + target.size);
 }
 
@@ -928,7 +930,8 @@ async function list7zEntries(filePath) {
 }
 
 async function extract7zEntry(filePath, entryPath) {
-  return await run7z(['x', filePath, '-so', entryPath]);
+  // -spd: 禁用通配符匹配（entryPath 含 * ? 时按字面处理）; -y: 假设全部提示为是; --: 终止选项解析（防 entryPath 以 - 开头被当选项）
+  return await run7z(['x', filePath, '-so', '-spd', '-y', '--', entryPath]);
 }
 
 // 统一提取接口：按格式分发
@@ -952,6 +955,9 @@ async function extractEntryFromArchive(filePath, entryPath) {
     if (decompressed.length >= 262 && decompressed.slice(257, 262).toString('ascii') === 'ustar') {
       return extractTarEntry(decompressed, entryPath);
     }
+    // 单文件 GZ：虚拟条目名为去除 .gz/.tgz 后缀的文件名，须精确匹配（否则会把整个解压内容错发给任意请求）
+    const baseName = path.basename(filePath).replace(/\.t?gz$/i, '') || 'content';
+    if (entryPath.replace(/\\/g, '/') !== baseName) throw new Error('entry not found: ' + entryPath);
     return decompressed; // 单文件 GZ
   }
   if (format === 'sevenzip') {
