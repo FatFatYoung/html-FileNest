@@ -290,8 +290,7 @@ body {
       </select>
       <button class="btn" id="btn-sort-dir" title="升序 / 降序切换">↑ 升序</button>
       <button class="btn" id="btn-group" title="按类型分组显示">分组</button>
-      <button class="btn" id="btn-mkdir" title="新建文件夹 (Ctrl+Shift+N)">新建文件夹</button>
-      <button class="btn" id="btn-mkfile" title="新建文件">新建文件</button>
+      <button class="btn" id="btn-new" title="新建（文件夹 / 文件类型）">新建 ▾</button>
       <button class="btn primary" id="btn-upload" title="上传文件 (Ctrl+U)">上传</button>
     </header>
     <div class="file-list grid-view" id="file-list"></div>
@@ -325,6 +324,7 @@ body {
   </div>
 </div>
 <div class="context-menu" id="context-menu"></div>
+<div class="context-menu" id="new-menu"></div>
 <script>
 (function () {
   'use strict';
@@ -1323,8 +1323,9 @@ body {
       if (state.current && state.current.path.indexOf('::') > 0) {
         add('刷新', '⟳', reload);
       } else {
-        add('新建文件夹', '📁', doMkdir);
-        add('新建文件', '📄', doMkfile);
+        add('新建', '➕', function () {
+          showNewMenu(parseInt(contextMenuEl.style.left) + 20, parseInt(contextMenuEl.style.top));
+        });
         add('上传文件', '⬆', function () { fileInput.click(); });
         sep();
         add('刷新', '⟳', reload);
@@ -1343,24 +1344,74 @@ body {
     if (!state.current || state.current.path === '*') {
       showToast('请先打开一个文件夹', 'error'); return;
     }
-    openModal('新建文件夹', '').then(function (name) {
+    openModal('新建文件夹', '新建文件夹').then(function (name) {
       if (!name) return;
       apiPost('/api/mkdir', { path: state.current.path, name: name })
         .then(reload)
         .catch(function (e) { showToast('创建失败: ' + e.message, 'error'); });
     });
   }
-  function doMkfile() {
+  function doMkfile(t) {
     if (!state.current || state.current.path === '*') {
       showToast('请先打开一个文件夹', 'error'); return;
     }
-    openModal('新建文件', '').then(function (name) {
+    openModal('新建' + t.name, '新建' + t.name + t.ext).then(function (name) {
       if (!name) return;
+      var ext = t.ext.toLowerCase();
+      if (name.toLowerCase().slice(-ext.length) !== ext) name = name + t.ext;  // 后缀名自动补全
       apiPost('/api/mkfile', { path: state.current.path, name: name })
         .then(reload)
         .catch(function (e) { showToast('创建失败: ' + e.message, 'error'); });
     });
   }
+
+  // —— "新建"二级菜单：文件夹 + 系统注册的文件类型（桌面右键菜单同源） ——
+  var newMenuEl = $('new-menu');
+  var newTypes = null, newMenuOpenAt = 0;
+  function showNewMenu(x, y) {
+    newMenuOpenAt = Date.now();
+    newMenuEl.innerHTML = '';
+    function item(label, ico, fn) {
+      var d = document.createElement('div');
+      d.className = 'item';
+      d.innerHTML = '<span>' + ico + '</span><span></span>';
+      d.querySelector('span:last-child').textContent = label;
+      d.onclick = function (e) { e.stopPropagation(); hideNewMenu(); fn(); };
+      newMenuEl.appendChild(d);
+    }
+    item('文件夹', '📁', doMkdir);
+    if (newTypes && newTypes.length) {
+      newTypes.forEach(function (t) {
+        item(t.name + ' (' + t.ext + ')', '📄', function () { doMkfile(t); });
+      });
+    } else {
+      item('类型加载中…', '⏳', function () {});
+      loadNewTypes();
+    }
+    newMenuEl.classList.add('show');
+    var mw = newMenuEl.offsetWidth, mh = newMenuEl.offsetHeight;
+    if (x + mw > window.innerWidth)  x = window.innerWidth - mw - 4;
+    if (y + mh > window.innerHeight) y = window.innerHeight - mh - 4;
+    newMenuEl.style.left = x + 'px';
+    newMenuEl.style.top  = y + 'px';
+  }
+  function hideNewMenu() { newMenuEl.classList.remove('show'); }
+  function loadNewTypes() {
+    fetch('/api/newfile-types', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        newTypes = d.types || [];
+        if (newMenuEl.classList.contains('show')) {
+          var x = parseInt(newMenuEl.style.left) || 0, y = parseInt(newMenuEl.style.top) || 0;
+          hideNewMenu(); showNewMenu(x, y);
+        }
+      })
+      .catch(function () { newTypes = []; });
+  }
+  document.addEventListener('click', function (e) {
+    if (Date.now() - newMenuOpenAt < 350) return;
+    if (!newMenuEl.contains(e.target)) hideNewMenu();
+  });
   function doRename(item) {
     openModal('重命名', item.name).then(function (name) {
       if (!name || name === item.name) return;
@@ -1456,8 +1507,11 @@ body {
   $('btn-fwd').onclick = navFwd;
   $('btn-up').onclick = navUp;
   $('btn-refresh').onclick = reload;
-  $('btn-mkdir').onclick = doMkdir;
-  $('btn-mkfile').onclick = doMkfile;
+  $('btn-new').onclick = function (e) {
+    e.stopPropagation();
+    var r = $('btn-new').getBoundingClientRect();
+    showNewMenu(r.left, r.bottom + 4);
+  };
   $('btn-goto').onclick = doGoto;
   $('btn-upload').onclick = function () { fileInput.click(); };
   $('btn-toggle-view').onclick = function () {
