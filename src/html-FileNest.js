@@ -410,6 +410,7 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/drives') return listDrives(res);
       if (p === '/api/desktop') return await desktopInfo(res, cfg);
       if (p === '/api/ls')     return await listDir(res, q, cfg);
+      if (p === '/api/newfile-types') return await newfileTypesOp(res);
       if (p === '/api/stat')   return await statPath(res, q, cfg);
       if (p === '/api/raw')    return await streamFile(req, res, q, cfg);
       if (p === '/api/read')   return await readTextFile(res, q, cfg);
@@ -1450,6 +1451,33 @@ async function mkfileOp(res, data, cfg) {
   const full = path.win32.join(dir, name);
   await fs.promises.writeFile(full, '', { flag: 'wx' });   // 已存在则报错，绝不覆盖
   sendJson(res, 200, { ok: true, path: full });
+}
+
+// —— Windows 右键"新建"菜单的文件类型（注册表 ShellNew，与桌面右键菜单同源） ——
+let newFileTypesCache = null;
+async function queryShellNewTypes() {
+  // .NET 直读注册表（PowerShell provider 枚举 HKCR 需 25s+，GetSubKeyNames 亚秒级）
+  const ps = '$rk=[Microsoft.Win32.Registry]::ClassesRoot; $out=@(); ' +
+    'foreach ($n in $rk.GetSubKeyNames()) { if ($n -notlike \".*\") { continue }; ' +
+    '$sk=$rk.OpenSubKey($n + \"\\\\ShellNew\"); if (-not $sk) { continue }; ' +
+    '$cmd=$sk.GetValue(\"Command\"); $sk.Close(); if ($cmd) { continue }; ' +
+    '$ek=$rk.OpenSubKey($n); $prog=$ek.GetValue(\"\"); $ek.Close(); $nm=$null; ' +
+    'if ($prog) { $pk=$rk.OpenSubKey($prog); if ($pk) { $nm=$pk.GetValue(\"\"); $pk.Close() } }; ' +
+    '$out += [PSCustomObject]@{ ext=$n; name=$(if ($nm) { $nm } else { $n }) } }; ' +
+    '$out | ConvertTo-Json -Compress';
+  const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+    { stdout: 'pipe', stderr: 'ignore' });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  let arr = [];
+  try { const j = JSON.parse(out.trim() || '[]'); arr = Array.isArray(j) ? j : [j]; } catch { }
+  return arr.filter(x => x && x.ext && x.ext !== '.lnk')
+    .map(x => ({ ext: x.ext, name: x.name || x.ext }))
+    .sort((a, b) => a.ext.localeCompare(b.ext));
+}
+async function newfileTypesOp(res) {
+  if (!newFileTypesCache) newFileTypesCache = await queryShellNewTypes();
+  sendJson(res, 200, { ok: true, types: newFileTypesCache });
 }
 
 async function renameOp(res, data, cfg) {
