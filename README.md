@@ -88,6 +88,8 @@ All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `
 |--------|----------|-------------|
 | GET | `/api/roots` | List configured root directories |
 | GET | `/api/drives` | List available drives (A–Z) |
+| GET | `/api/desktop` | List the user's Desktop folder (path + entries) |
+| GET | `/api/desktop-wallpaper` | Current system desktop wallpaper image (Desktop module header) |
 | GET | `/api/ls?path=<dir>` | List directory contents |
 | GET | `/api/stat?path=<abs>` | Get file/directory metadata |
 | GET | `/api/raw?path=<abs>` | Stream file content (supports Range) |
@@ -165,9 +167,11 @@ Config values support `${VAR}` syntax for dynamic expansion:
 
 ## Web UI Features
 
-- **Customizable UI** — The UI is a standalone `index.html` file. Source at `src/index.html`; deployed to `C:\html-FileNest\index.html` on first run. Edit the deployed file to personalize (hot-reloads on refresh)
+- **Customizable UI** — The UI is a standalone `index.html` file. Source at `src/index.html`; deployed to `C:\html-FileNest\index.html` on install and refreshed on upgrade (the replaced file is backed up to `index.html.bak`). Edit the deployed file to personalize — restarting from the installed location never overwrites it (hot-reloads on refresh)
 - **Grid / List views** — Toggle between visual grid and detailed list
 - **Directory tree sidebar** — Clickable tree showing current path hierarchy and subdirectories; "All Locations" root node for quick return
+- **Collapsible sidebar** — Collapse/expand the directory tree via the toolbar button or `Ctrl+B`; the choice is remembered across sessions
+- **Desktop module** — The "All Locations" page lists the Desktop folder's files directly below the drives (same click behavior as the main list), with an "Open desktop" shortcut; the module header inherits the system desktop wallpaper
 - **Filename search** — Filter files in the current directory from the toolbar
 - **Sorting** — Sort by name, size, modified time, or type (ascending/descending)
 - **Grouping** — Group files by category (folders, documents, images, videos, etc.)
@@ -177,7 +181,7 @@ Config values support `${VAR}` syntax for dynamic expansion:
 - **Open with system handler** — Double-click or use the 📂 button in the preview header
 - **Context menu** — Right-click for Open, Preview, Reveal, Rename, Copy to…, Move to…, Delete; archive files show Preview / Download / Open with system handler
 - **Drag & drop upload** — Drag files into the window to upload
-- **Keyboard shortcuts** — `Backspace` (up), `Alt+←/→` (back/forward), `F5` (refresh), `Ctrl+Shift+N` (new folder), `Ctrl+U` (upload)
+- **Keyboard shortcuts** — `Backspace` (up), `Alt+←/→` (back/forward), `F5` (refresh), `Ctrl+B` (collapse/expand sidebar), `Ctrl+Shift+N` (new folder), `Ctrl+U` (upload)
 
 ## Uninstall
 
@@ -185,6 +189,8 @@ Run in an **elevated** command prompt:
 ```bash
 html-FileNest.exe --uninstall
 ```
+
+This removes the scheduled task, the local certificate and the UI files (`index.html`, `index.html.bak`); the exe itself and `config.json` remain in `C:\html-FileNest\` (delete the folder manually for a full cleanup).
 
 Or manually:
 1. Delete the scheduled task `html-FileNest` (taskschd.msc)
@@ -226,6 +232,11 @@ html-FileNest/
 - A: The request's `Origin` header is not localhost. For same-origin requests from the built-in UI, this should not occur.
 
 ## Changelog
+
+**Unreleased**
+- UI: collapsible sidebar — collapse/expand the directory tree from a toolbar button or `Ctrl+B`; the preference persists across sessions.
+- UI: Desktop module on the "All Locations" page — the Desktop folder's files are listed directly below the drives (same click behavior as the main list) with an "Open desktop" shortcut. The module header inherits the real system desktop wallpaper via the new `/api/desktop-wallpaper` endpoint (TranscodedWallpaper first, then the `HKCU` `WallPaper` registry value). A new `/api/desktop` endpoint returns the Desktop path and entries (redirected Desktops resolved via the User Shell Folders registry key); both endpoints respect configured `roots` restrictions.
+- Fix: UI file lifecycle. Installing or upgrading now always refreshes `index.html` to the new version's UI — previously a leftover `index.html` from an old install was never overwritten, so UI updates never reached the deployment. The replaced file is backed up to `index.html.bak` first, and launching from the installed location still leaves the UI untouched so user customizations survive restarts. `--uninstall` now also removes `index.html` and `index.html.bak` (previously they were left behind and poisoned the next install).
 
 **v1.4.2.3 (Latest)**
 - Security: archive extraction hardening (three fixes). (1) `extract7zEntry` (7z/RAR extraction) now passes `-spd -y --`: wildcard characters in entry names are matched literally and cannot redirect extraction, and entry names starting with `-` cannot be parsed as 7-Zip options. (2) TAR extraction now validates `dataOffset + size` against the buffer before slicing — a TAR header declaring an out-of-range size used to be silently truncated by `Buffer.slice`, producing a corrupted download with no error; it is now rejected as `corrupted archive: entry size out of range`. (3) Single-file GZ extraction now verifies the requested entry name against the virtual entry name — previously the `entryPath` argument was ignored and the entire decompressed content was returned for any request.
