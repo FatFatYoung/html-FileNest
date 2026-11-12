@@ -123,9 +123,10 @@ function normalizeConfig(cfg) {
       src.roots = ['*'];
     }
     if (src.roots) {
-      // roots 展开后必须为本地绝对路径（盘符）或通配 '*'（#23）：拒绝相对路径与 UNC，防路径注入
+      // roots 展开后必须为绝对路径（盘符或 UNC 网络路径）或通配 '*'（#23）：拒绝相对路径，防路径注入
+      // UNC 不拒绝（杨总 2026-11-13 指示，NAS 共享盘场景需要）
       src.roots = src.roots.map(expand).filter(r =>
-        typeof r === 'string' && (r === '*' || /^[A-Za-z]:[\\/]/.test(r)));
+        typeof r === 'string' && (r === '*' || /^[A-Za-z]:[\\/]/.test(r) || /^[\\/]{2}[^\\/]/.test(r)));
       if (!src.roots.length) src.roots = [];
     }
     if (src.base) src.base = expand(src.base);
