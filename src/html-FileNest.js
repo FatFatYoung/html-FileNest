@@ -3,6 +3,7 @@
 // 双击无参数 => 部署并启动；--serve => 仅服务；--uninstall => 卸载
 
 const fs     = require('fs');
+const os     = require('os');
 const path   = require('path');
 const net    = require('net');
 const http   = require('http');
@@ -101,8 +102,16 @@ function normalizeConfig(cfg) {
   if (c.security.requireLocalOrigin === undefined) c.security.requireLocalOrigin = true;
   c.security.authToken = c.security.authToken || '';
 
+  // ${ENV} 展开加白名单（#23）：仅预定义安全变量可展开，未知变量按空串处理，防环境变量值泄露
+  const ENV_WHITELIST = new Set([
+    'USERPROFILE', 'USERNAME', 'COMPUTERNAME', 'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA',
+    'PUBLIC', 'HOMEDRIVE', 'HOMEPATH', 'SYSTEMROOT', 'WINDIR', 'PROGRAMFILES',
+    'PROGRAMFILES(X86)', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
+    'ALLUSERSPROFILE', 'PROGRAMDATA'
+  ]);
   const expand = (s) => typeof s === 'string'
-    ? s.replace(/\$\{([^}]+)\}/g, (_, k) => process.env[k] || '')
+    ? s.replace(/\$\{([^}]+)\}/g, (_, k) =>
+        (ENV_WHITELIST.has(String(k).toUpperCase()) ? (process.env[k] || '') : ''))
     : s;
 
   Object.keys(c.sources).forEach(k => {
@@ -113,7 +122,12 @@ function normalizeConfig(cfg) {
     if (src.type === 'local' && (!src.roots || !src.roots.length)) {
       src.roots = ['*'];
     }
-    if (src.roots) src.roots = src.roots.map(expand);
+    if (src.roots) {
+      // roots 展开后必须为本地绝对路径（盘符）或通配 '*'（#23）：拒绝相对路径与 UNC，防路径注入
+      src.roots = src.roots.map(expand).filter(r =>
+        typeof r === 'string' && (r === '*' || /^[A-Za-z]:[\\/]/.test(r)));
+      if (!src.roots.length) src.roots = [];
+    }
     if (src.base) src.base = expand(src.base);
     if (src.tryAll == null) src.tryAll = true;
   });
@@ -247,6 +261,9 @@ function runServer() {
     }
   }
   setTimeout(() => cleanupCache(false).catch(() => {}), 5000);
+  // 临时文件兜底清扫（#11/#12）：启动后延时首扫，此后每 6h
+  setTimeout(() => { try { sweepStaleTemp(); } catch (_) {} }, 7000);
+  setInterval(() => { try { sweepStaleTemp(); } catch (_) {} }, 6 * 3600000).unref();
 }
 
 function handleRequest(req, res) {
@@ -390,7 +407,8 @@ async function handleApi(req, res, p, q, cfg) {
 
     if (req.method === 'POST') {
       if (p === '/api/upload') return await uploadOp(req, res, q, cfg);
-      const body = await readBody(req);
+      // /api/write 放宽到 50MB（前端文本编辑器保存大文件，#21）；其余保持 10MB
+      const body = await readBody(req, p === '/api/write' ? 50 * 1024 * 1024 : 10 * 1024 * 1024);
       const data = body ? JSON.parse(body) : {};
       if (p === '/api/mkdir')  return await mkdirOp(res, data, cfg);
       if (p === '/api/rename') return await renameOp(res, data, cfg);
@@ -797,8 +815,39 @@ function extractPsdComposite(buf) {
 // 文件名编码解码：优先 UTF-8，有替换字符则回退 GB18030（中文 Windows 常见编码）
 function decodeArchiveName(buf) {
   if (!buf || buf.length === 0) return '';
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  // 去掉尾部 NUL 填充（TAR 头按定长字段填充），避免稀释极短名的判断（#10）
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] === 0) end--;
+  if (end === 0) return '';
+  bytes = bytes.slice(0, end);
   const utf8 = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  // 极短名（<=5 字节）：GB18030 双字节序列可能恰好是合法 UTF-8（如 GBK "啊" = B0A1），
+  // 两边都解、取"常见字符占比"更高的一侧（#10）；平手取 UTF-8（维持原行为）
+  if (bytes.length <= 5) {
+    const decode = (enc) => { try { return new TextDecoder(enc, { fatal: false }).decode(bytes); } catch (_) { return null; } };
+    const gb = decode('gb18030');
+    if (gb && gb !== utf8) {
+      const plausible = (s) => {
+        const cs = Array.from(s);
+        if (!cs.length) return 0;
+        let ok = 0;
+        for (const ch of cs) {
+          const c = ch.codePointAt(0);
+          const good = (c >= 0x20 && c <= 0x7e) ||
+            (c >= 0xa0 && c <= 0xff && c !== 0xd7 && c !== 0xf7) ||
+            (c >= 0x100 && c <= 0x24f) || (c >= 0x370 && c <= 0x4ff) ||
+            (c >= 0x3000 && c <= 0x303f) || (c >= 0x3040 && c <= 0x30ff) ||
+            (c >= 0x4e00 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) ||
+            (c >= 0xff00 && c <= 0xffef);
+          if (good) ok++;
+        }
+        return ok / cs.length;
+      };
+      if (plausible(gb) > plausible(utf8)) return gb;
+    }
+    return utf8;
+  }
   const bad = (utf8.match(/\uFFFD/g) || []).length;
   if (bad === 0) return utf8;
   try {
@@ -816,7 +865,7 @@ function detectArchiveFormat(filePath) {
 }
 
 // TAR 解析器：解析 512 字节文件头（USTAR + GNU 扩展）
-function parseTarEntries(buf) {
+function parseTarEntries(buf, stopAt) {
   const entries = [];
   let offset = 0;
   let longName = null; // GNU 长文件名缓冲
@@ -867,6 +916,8 @@ function parseTarEntries(buf) {
     const isDir = typeFlag === '5' || name.endsWith('/');
     if (name !== '.' && name !== './' && name !== '' && !name.startsWith('PaxHeaders.')) {
       entries.push({ name: name, size: isDir ? 0 : size, type: isDir ? 'dir' : 'file', dataOffset: dataStart });
+      // 命中目标条目即停止解析（stopAt，#16）：避免大 TAR 全量扫描
+      if (stopAt && name === stopAt && !isDir) return entries;
     }
     offset = dataStart + Math.ceil(size / 512) * 512;
   }
@@ -875,7 +926,7 @@ function parseTarEntries(buf) {
 
 function extractTarEntry(buf, entryPath) {
   const norm = entryPath.replace(/\\/g, '/').replace(/^\/+/, '');
-  const entries = parseTarEntries(buf);
+  const entries = parseTarEntries(buf, norm);
   const target = entries.find(e => e.name === norm && e.type === 'file');
   if (!target) throw new Error('entry not found: ' + entryPath);
   // 越界校验：声明 size 超出实际缓冲区时 Buffer.slice 会静默截断 → 无声数据损坏，显式拒绝
@@ -884,10 +935,20 @@ function extractTarEntry(buf, entryPath) {
 }
 
 // 7z CLI 集成（RAR / 7Z / 其他 7z 支持的格式）
+let _7zExeCache;
 function get7zExe() {
+  if (_7zExeCache) return _7zExeCache;
   const known = ['C:\\Program Files\\7-Zip\\7z.exe', 'C:\\Program Files (x86)\\7-Zip\\7z.exe'];
-  for (const p of known) { try { if (fs.existsSync(p)) return p; } catch (_) {} }
-  return '7z';
+  for (const p of known) { try { if (fs.existsSync(p)) return (_7zExeCache = p); } catch (_) {} }
+  // 自定义安装路径：查 PATH（#18），找不到给出明确错误而非静默 spawn ENOENT
+  try {
+    const which = spawnSync('where', ['7z'], { encoding: 'utf8', windowsHide: true });
+    if (which.status === 0) {
+      const hit = String(which.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0];
+      if (hit) return (_7zExeCache = hit);
+    }
+  } catch (_) {}
+  throw new Error('未找到 7z.exe，请安装 7-Zip 或将其加入 PATH');
 }
 
 function run7z(args) {
@@ -907,7 +968,7 @@ function run7z(args) {
 }
 
 async function list7zEntries(filePath) {
-  const out = await run7z(['l', '-slt', filePath]);
+  const out = await run7z(['l', '-slt', '-y', filePath]);
   // 7z 输出在中文 Windows 下可能是 GBK/GB18030 编码
   const text = decodeArchiveName(out);
   const entries = [];
@@ -992,7 +1053,7 @@ function buildArchiveItems(rawEntries, subdir) {
   }
   items.sort((a, b) => {
     if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    return a.name.localeCompare(b.name);
+    return a.name.localeCompare(b.name, 'zh', { numeric: true });
   });
   return items;
 }
@@ -1043,18 +1104,8 @@ async function archiveExtract(req, res, q, cfg) {
     if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   }
   const data = await extractEntryFromArchive(file, entry);
-  // 猜测 MIME
-  const ext = path.extname(entry).toLowerCase();
-  const mimeMap = {
-    '.txt': 'text/plain', '.html': 'text/html', '.css': 'text/css',
-    '.js': 'application/javascript', '.json': 'application/json',
-    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.jpe': 'image/jpeg', '.jfif': 'image/jpeg',
-    '.gif': 'image/gif', '.svg': 'image/svg+xml', '.pdf': 'application/pdf',
-    '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.webp': 'image/webp', '.apng': 'image/apng',
-    '.tif': 'image/tiff', '.tiff': 'image/tiff', '.avif': 'image/avif',
-    '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
-  };
-  const mime = mimeMap[ext] || 'application/octet-stream';
+  // 猜测 MIME：复用 getMime 全量表（#15，此前独立简表缺 20+ 种类型）
+  const mime = getMime(path.extname(entry).toLowerCase().slice(1));
   res.writeHead(200, {
     'Content-Type': mime,
     'Content-Length': data.length,
@@ -1447,6 +1498,13 @@ async function openOp(res, data, cfg) {
     const tmpFile = path.join(tmpDir, Date.now() + '_' + base);
     await fs.promises.writeFile(tmpFile, content);
     openWithSystem(tmpFile);
+    // 打开副本延迟清理（#12）：1h 后尝试删除，被查看器占用则退避重试，24h 清扫兜底
+    const tryDelete = (attempt) => {
+      setTimeout(() => {
+        fs.promises.unlink(tmpFile).catch(() => { if (attempt < 3) tryDelete(attempt + 1); });
+      }, 3600000);
+    };
+    tryDelete(0);
     return sendJson(res, 200, { ok: true, path: tmpFile, extracted: true });
   }
   const target = resolveAllowedPath(data.path, cfg);
@@ -1464,6 +1522,8 @@ async function uploadOp(req, res, q, cfg) {
   if (!overwrite && fs.existsSync(full)) throw new Error('file exists: ' + name);
 
   const tmp = full + '.upload.' + process.pid + '.' + Date.now();
+  _activeUploadTmps.add(tmp);
+  journalUploadDir(dir);
   await new Promise((resolve, reject) => {
     const ws = fs.createWriteStream(tmp);
     let done = false;
@@ -1481,6 +1541,7 @@ async function uploadOp(req, res, q, cfg) {
 
   try { if (fs.existsSync(full)) fs.unlinkSync(full); } catch (_) {}
   fs.renameSync(tmp, full);
+  _activeUploadTmps.delete(tmp);
   sendJson(res, 200, { ok: true, path: full, size: fs.statSync(full).size });
 }
 
@@ -1539,7 +1600,11 @@ async function handleFileOp(op, q, res, cfg) {
 
   if (op === '/reveal') {
     try {
-      spawn('explorer.exe', ['/select,', localPath],
+      // 路径含逗号时 explorer 的 /select, 切分会误解析 → 退化为打开所在文件夹（#20）
+      const sel = localPath.includes(',')
+        ? [path.win32.dirname(localPath)]
+        : ['/select,', localPath];
+      spawn('explorer.exe', sel,
         { windowsHide: false, detached: true, stdio: 'ignore' }).unref();
       return sendJson(res, 200, { ok: true });
     } catch (e) {
@@ -1763,6 +1828,52 @@ async function cleanupCache(force) {
     }
   } catch (e) {}
 }
+
+// —— 临时文件兜底回收（#11/#12）——
+// 上传残留（.upload.<pid>.<ts>）：进程崩溃/断电后残留目标目录，靠目录日志 + 24h 阈值清扫；
+// 压缩包"用系统程序打开"副本（%TEMP%\html-FileNest-open）：同样 24h 阈值清扫。
+const _activeUploadTmps = new Set();
+const UPLOAD_JOURNAL = path.join(INSTALL_DIR, 'upload-journal.json');
+function journalUploadDir(dir) {
+  try {
+    let arr = [];
+    try { arr = JSON.parse(fs.readFileSync(UPLOAD_JOURNAL, 'utf8')) || []; } catch (_) {}
+    if (!Array.isArray(arr)) arr = [];
+    if (arr.indexOf(dir) < 0) {
+      arr.push(dir);
+      if (arr.length > 50) arr = arr.slice(-50);
+      fs.writeFileSync(UPLOAD_JOURNAL, JSON.stringify(arr));
+    }
+  } catch (_) {}
+}
+function sweepStaleTemp() {
+  const now = Date.now();
+  const maxMs = 24 * 3600000;
+  const cleanDir = (dir, re) => {
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (re && !re.test(f)) continue;
+        const full = path.join(dir, f);
+        try {
+          const st = fs.statSync(full);
+          if (st.isFile() && now - st.mtimeMs > maxMs) fs.unlinkSync(full);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  };
+  // 上传残留：只扫日志记录过的目录，避免全盘扫描
+  try {
+    let arr = [];
+    try { arr = JSON.parse(fs.readFileSync(UPLOAD_JOURNAL, 'utf8')) || []; } catch (_) {}
+    if (Array.isArray(arr)) for (const dir of arr) cleanDir(dir, /\.upload\.\d+\.\d+$/);
+  } catch (_) {}
+  // 压缩包打开副本
+  cleanDir(path.join(os.tmpdir(), 'html-FileNest-open'), null);
+}
+// 进程退出时尽力清理进行中的上传临时文件（崩溃/断电路径由 journal 清扫兜底）
+process.on('exit', () => {
+  for (const t of _activeUploadTmps) { try { fs.unlinkSync(t); } catch (_) {} }
+});
 
 // ============ 工具 ============
 function sendJson(res, code, obj) {
