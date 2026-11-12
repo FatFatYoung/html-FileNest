@@ -1365,6 +1365,11 @@ async function rmOp(res, data, cfg) {
 async function mvOp(res, data, cfg) {
   const src = resolveAllowedPath(data.from, cfg);
   const dst = resolveAllowedPath(data.to, cfg);
+  const st = await fs.promises.stat(src);
+  if (!st.isDirectory()) {
+    const extCheck = checkExtension(dst, cfg);
+    if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
+  }
   try {
     await fs.promises.rename(src, dst);
   } catch (e) {
@@ -1385,6 +1390,11 @@ async function cpOp(res, data, cfg) {
   const dst = resolveAllowedPath(data.to, cfg);
   if (path.win32.normalize(src).toLowerCase() === path.win32.normalize(dst).toLowerCase()) {
     throw new Error('source and destination are the same');
+  }
+  const st = await fs.promises.stat(src);
+  if (!st.isDirectory()) {
+    const extCheck = checkExtension(dst, cfg);
+    if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   }
   await copyRecursive(src, dst);
   sendJson(res, 200, { ok: true });
