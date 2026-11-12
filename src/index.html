@@ -255,6 +255,39 @@ body {
   font-size: 24px; font-weight: 600; color: var(--accent-2);
   pointer-events: none; z-index: 500;
 }
+/* —— 侧栏收起/展开（工具栏 ◧ 按钮 / Ctrl+B）—— */
+.sidebar { transition: width .18s ease; }
+.app.sidebar-collapsed .sidebar { width: 0; border-right: none; }
+.app.sidebar-collapsed .sidebar .logo,
+.app.sidebar-collapsed .sidebar .list { display: none; }
+/* —— 桌面模块（所有位置页，壁纸继承系统桌面）—— */
+.desktop-module {
+  grid-column: 1/-1; margin: 12px 2px 4px;
+  border: 1px solid var(--border); border-radius: 10px;
+  overflow: hidden; background: var(--bg-2);
+}
+.list-view .desktop-module { margin: 12px 12px 4px; }
+.desktop-wall {
+  height: 130px;
+  background: linear-gradient(135deg, #1f6feb33, #23282e);
+  background-size: cover; background-position: center;
+  display: flex; align-items: flex-end; position: relative;
+}
+.desktop-wall::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(transparent, rgba(13,17,23,0.78));
+}
+.desktop-wall-inner {
+  position: relative; z-index: 1; width: 100%;
+  padding: 10px 14px; display: flex; align-items: center; gap: 10px;
+}
+.desktop-title { font-weight: 600; font-size: 14px; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.desktop-sub { font-size: 12px; color: #cfd8e3; text-shadow: 0 1px 3px rgba(0,0,0,.6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-open-btn { margin-left: auto; flex-shrink: 0; }
+.desktop-items {
+  display: grid; grid-template-columns: repeat(auto-fill,minmax(150px,1fr));
+  gap: 8px; padding: 10px; max-height: 280px; overflow-y: auto;
+}
 </style>
 </head>
 <body>
@@ -268,6 +301,7 @@ body {
   </aside>
   <main class="main">
     <header class="toolbar">
+      <button class="icon-btn" id="btn-sidebar" title="收起/展开侧栏 (Ctrl+B)">◧</button>
       <button class="icon-btn" id="btn-back" title="后退 (Alt+←)">←</button>
       <button class="icon-btn" id="btn-fwd" title="前进 (Alt+→)">→</button>
       <button class="icon-btn" id="btn-up" title="上一级 (Backspace)">↑</button>
@@ -331,7 +365,8 @@ body {
     filter: '',
     sortKey: 'name',   // 排序字段：name / size / mtime / type
     sortAsc: true,     // 升序 / 降序
-    group: false       // 按类型分组显示
+    group: false,      // 按类型分组显示
+    desktop: { loading: false, ready: false, path: '', items: [] }  // 桌面模块缓存
   };
   var $ = function (id) { return document.getElementById(id); };
   var enc = encodeURIComponent;
@@ -666,6 +701,61 @@ body {
   }
   var CATEGORY_ORDER = ['文件夹', '文档', '图片', '视频', '音频', '压缩包', '其他'];
 
+  // —— 桌面模块（所有位置页）：盘符下方直接显示桌面文件，壁纸继承系统桌面 ——
+  function loadDesktop(force) {
+    var d = state.desktop;
+    if (d.loading) return;
+    if (d.ready && !force) return;
+    d.loading = true;
+    apiGet('/api/desktop').then(function (r) {
+      d.loading = false; d.ready = true;
+      d.path = r.path; d.items = r.items || [];
+      if (state.current && state.current.path === '*') renderList();
+    }).catch(function () {
+      d.loading = false; d.ready = true; d.path = ''; d.items = [];
+    });
+  }
+  function appendDesktopModule() {
+    var d = state.desktop;
+    var mod = document.createElement('div');
+    mod.className = 'desktop-module';
+    var wall = document.createElement('div');
+    wall.className = 'desktop-wall';
+    wall.style.backgroundImage = "url('/api/desktop-wallpaper')";
+    var inner = document.createElement('div');
+    inner.className = 'desktop-wall-inner';
+    inner.innerHTML = '<span class="desktop-title">🖥️ 桌面</span>';
+    var sub = document.createElement('span');
+    sub.className = 'desktop-sub';
+    sub.textContent = d.loading ? '加载中…' :
+      (d.path ? d.items.length + ' 个项目 · ' + d.path : '桌面不可用');
+    inner.appendChild(sub);
+    var openBtn = document.createElement('button');
+    openBtn.className = 'btn desktop-open-btn';
+    openBtn.textContent = '打开桌面';
+    openBtn.style.display = d.path ? '' : 'none';
+    openBtn.onclick = function (e) {
+      e.stopPropagation();
+      if (state.desktop.path) navTo({ path: state.desktop.path, source: state.current.source });
+    };
+    inner.appendChild(openBtn);
+    wall.appendChild(inner);
+    mod.appendChild(wall);
+    var wrap = document.createElement('div');
+    wrap.className = 'desktop-items';
+    if (d.loading) {
+      wrap.innerHTML = '<div class="empty" style="grid-column:1/-1;padding:18px;">加载中…</div>';
+    } else if (!d.items.length) {
+      wrap.innerHTML = '<div class="empty" style="grid-column:1/-1;padding:18px;">' +
+        (d.path ? '桌面为空' : '桌面不可用') + '</div>';
+    } else {
+      d.items.forEach(function (it) { wrap.appendChild(makeItemEl(it)); });
+    }
+    mod.appendChild(wrap);
+    listEl.appendChild(mod);
+    loadDesktop(false);
+  }
+
   function renderList() {
     listEl.innerHTML = '';
     listEl.className = 'file-list ' + (state.viewMode === 'grid' ? 'grid-view' : 'list-view');
@@ -676,6 +766,7 @@ body {
       empty.innerHTML = '<span class="emoji">📂</span>' +
         (state.filter ? '没有匹配的文件' : '此文件夹为空');
       listEl.appendChild(empty);
+      if (state.current && state.current.path === '*' && !state.filter) appendDesktopModule();
       return;
     }
     if (state.group) {
@@ -692,6 +783,8 @@ body {
     } else {
       items.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
     }
+    // 所有位置页：盘符下方追加桌面模块
+    if (state.current && state.current.path === '*' && !state.filter) appendDesktopModule();
   }
   function makeItemEl(item) {
     var div = document.createElement('div');
@@ -845,6 +938,7 @@ body {
       });
       state.selected = null;
       render();
+      loadDesktop(true);   // 桌面模块：先用缓存渲染，后台静默刷新
     });
   }
   function openItem(item) {
@@ -1413,6 +1507,27 @@ body {
     renderList();
   };
   $('preview-close').onclick = function () { previewEl.classList.remove('open'); revokeObjectUrls(); };  // 审查 #13：关闭预览回收 Blob URL
+
+  // —— 侧栏收起/展开（工具栏按钮 / Ctrl+B，偏好持久化）——
+  function applySidebar(collapsed) {
+    appEl.classList.toggle('sidebar-collapsed', collapsed);
+    try { localStorage.setItem('fn-sidebar', collapsed ? '1' : '0'); } catch (e) {}
+    var b = $('btn-sidebar');
+    if (b) {
+      b.textContent = collapsed ? '◨' : '◧';
+      b.title = collapsed ? '展开侧栏 (Ctrl+B)' : '收起侧栏 (Ctrl+B)';
+    }
+  }
+  $('btn-sidebar').onclick = function () {
+    applySidebar(!appEl.classList.contains('sidebar-collapsed'));
+  };
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'b' || e.key === 'B')) {
+      e.preventDefault();
+      applySidebar(!appEl.classList.contains('sidebar-collapsed'));
+    }
+  });
+  try { applySidebar(localStorage.getItem('fn-sidebar') === '1'); } catch (e) { applySidebar(false); }
 
   // —— 预览面板拖拽调宽 ——
   (function () {

@@ -396,6 +396,8 @@ async function handleApi(req, res, p, q, cfg) {
     if (req.method === 'GET' || req.method === 'HEAD') {
       if (p === '/api/roots')  return listRoots(res, cfg);
       if (p === '/api/drives') return listDrives(res);
+      if (p === '/api/desktop') return await desktopInfo(res, cfg);
+      if (p === '/api/desktop-wallpaper') return desktopWallpaper(res);
       if (p === '/api/ls')     return await listDir(res, q, cfg);
       if (p === '/api/stat')   return await statPath(res, q, cfg);
       if (p === '/api/raw')    return await streamFile(req, res, q, cfg);
@@ -499,6 +501,88 @@ function listDrives(res) {
     try { fs.accessSync(d); drives.push(d); } catch (e) {}
   }
   sendJson(res, 200, { ok: true, drives });
+}
+
+// —— 桌面集成（所有位置页的桌面模块）——
+function getDesktopDir() {
+  // 首选注册表 User Shell Folders\Desktop（兼容桌面重定向到 OneDrive 等场景），回退 %USERPROFILE%\Desktop
+  try {
+    const q = spawnSync('reg', ['query',
+      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Desktop'],
+      { encoding: 'utf8', windowsHide: true });
+    if (q.status === 0) {
+      const m = String(q.stdout).match(/Desktop\s+REG_(?:EXPAND_)?SZ\s+(.+)/i);
+      let p = m && m[1] ? m[1].trim() : '';
+      if (p) {
+        p = p.replace(/%([^%]+)%/g, (_, k) => process.env[k] || ('%' + k + '%'));
+        if (fs.existsSync(p)) return p;
+      }
+    }
+  } catch (_) {}
+  return path.join(process.env.USERPROFILE || os.homedir(), 'Desktop');
+}
+
+async function desktopInfo(res, cfg) {
+  const dir = getDesktopDir();
+  // 受 roots 约束校验：受限配置下桌面不可见时，前端隐藏/降级显示桌面模块
+  resolveAllowedPath(dir, cfg);
+  const st = await fs.promises.stat(dir);
+  if (!st.isDirectory()) throw new Error('desktop not found');
+  const ents = await fs.promises.readdir(dir, { withFileTypes: true });
+  const items = [];
+  for (const ent of ents) {
+    const full = path.win32.join(dir, ent.name);
+    let type = 'other', size = 0, mtime = 0;
+    try {
+      const s = await fs.promises.stat(full);
+      type = s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other';
+      size = s.size;
+      mtime = s.mtimeMs;
+    } catch (_) {}
+    items.push({
+      name: ent.name, path: full, type: type, size: size, mtime: mtime,
+      ext: path.win32.extname(ent.name).toLowerCase().slice(1)
+    });
+  }
+  sendJson(res, 200, { ok: true, path: dir, items: items });
+}
+
+function desktopWallpaper(res) {
+  // 继承系统桌面壁纸：TranscodedWallpaper（当前壁纸的 JPEG 副本）→ 注册表 WallPaper 指向的文件
+  const candidates = [];
+  try {
+    candidates.push(path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Themes', 'TranscodedWallpaper'));
+  } catch (_) {}
+  for (const c of candidates) {
+    try {
+      const st = fs.statSync(c);
+      if (st.isFile() && st.size > 0) return sendWallpaperFile(res, c, '.jpg');
+    } catch (_) {}
+  }
+  try {
+    const q = spawnSync('reg', ['query', 'HKCU\\Control Panel\\Desktop', '/v', 'WallPaper'],
+      { encoding: 'utf8', windowsHide: true });
+    if (q.status === 0) {
+      const m = String(q.stdout).match(/WallPaper\s+REG_(?:EXPAND_)?SZ\s+(.+)/i);
+      const wp = m && m[1] ? m[1].trim() : '';
+      if (wp && fs.existsSync(wp)) {
+        return sendWallpaperFile(res, wp, path.extname(wp).toLowerCase() || '.jpg');
+      }
+    }
+  } catch (_) {}
+  return sendJson(res, 404, { ok: false, error: 'no wallpaper' });
+}
+
+function sendWallpaperFile(res, file, ext) {
+  const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.bmp': 'image/bmp' };
+  const st = fs.statSync(file);
+  res.writeHead(200, {
+    'Content-Type': mimeMap[ext] || 'image/jpeg',
+    'Content-Length': st.size,
+    'Cache-Control': 'public, max-age=300',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  fs.createReadStream(file).pipe(res);
 }
 
 async function listDir(res, q, cfg) {
