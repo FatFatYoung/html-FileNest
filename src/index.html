@@ -291,6 +291,7 @@ body {
       <button class="btn" id="btn-sort-dir" title="升序 / 降序切换">↑ 升序</button>
       <button class="btn" id="btn-group" title="按类型分组显示">分组</button>
       <button class="btn" id="btn-mkdir" title="新建文件夹 (Ctrl+Shift+N)">新建文件夹</button>
+      <button class="btn" id="btn-mkfile" title="新建文件">新建文件</button>
       <button class="btn primary" id="btn-upload" title="上传文件 (Ctrl+U)">上传</button>
     </header>
     <div class="file-list grid-view" id="file-list"></div>
@@ -1323,6 +1324,7 @@ body {
         add('刷新', '⟳', reload);
       } else {
         add('新建文件夹', '📁', doMkdir);
+        add('新建文件', '📄', doMkfile);
         add('上传文件', '⬆', function () { fileInput.click(); });
         sep();
         add('刷新', '⟳', reload);
@@ -1344,6 +1346,17 @@ body {
     openModal('新建文件夹', '').then(function (name) {
       if (!name) return;
       apiPost('/api/mkdir', { path: state.current.path, name: name })
+        .then(reload)
+        .catch(function (e) { showToast('创建失败: ' + e.message, 'error'); });
+    });
+  }
+  function doMkfile() {
+    if (!state.current || state.current.path === '*') {
+      showToast('请先打开一个文件夹', 'error'); return;
+    }
+    openModal('新建文件', '').then(function (name) {
+      if (!name) return;
+      apiPost('/api/mkfile', { path: state.current.path, name: name })
         .then(reload)
         .catch(function (e) { showToast('创建失败: ' + e.message, 'error'); });
     });
@@ -1444,6 +1457,7 @@ body {
   $('btn-up').onclick = navUp;
   $('btn-refresh').onclick = reload;
   $('btn-mkdir').onclick = doMkdir;
+  $('btn-mkfile').onclick = doMkfile;
   $('btn-goto').onclick = doGoto;
   $('btn-upload').onclick = function () { fileInput.click(); };
   $('btn-toggle-view').onclick = function () {

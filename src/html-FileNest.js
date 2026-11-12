@@ -425,6 +425,7 @@ async function handleApi(req, res, p, q, cfg) {
       const body = await readBody(req, p === '/api/write' ? 50 * 1024 * 1024 : 10 * 1024 * 1024);
       const data = body ? JSON.parse(body) : {};
       if (p === '/api/mkdir')  return await mkdirOp(res, data, cfg);
+      if (p === '/api/mkfile') return await mkfileOp(res, data, cfg);
       if (p === '/api/rename') return await renameOp(res, data, cfg);
       if (p === '/api/rm')     return await rmOp(res, data, cfg);
       if (p === '/api/mv')     return await mvOp(res, data, cfg);
@@ -1437,6 +1438,17 @@ async function mkdirOp(res, data, cfg) {
   }
   const full = path.win32.join(dir, name);
   await fs.promises.mkdir(full);
+  sendJson(res, 200, { ok: true, path: full });
+}
+
+async function mkfileOp(res, data, cfg) {
+  const dir = resolveAllowedPath(data.path, cfg);
+  const name = String(data.name || '').trim();
+  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..') {
+    throw new Error('invalid file name');
+  }
+  const full = path.win32.join(dir, name);
+  await fs.promises.writeFile(full, '', { flag: 'wx' });   // 已存在则报错，绝不覆盖
   sendJson(res, 200, { ok: true, path: full });
 }
 
