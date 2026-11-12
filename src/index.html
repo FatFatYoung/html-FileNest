@@ -885,177 +885,21 @@ body {
       })
       .catch(function (e) { showToast('打开失败: ' + e.message, 'error'); });
   }
-  function previewFile(item) {
-    state.previewItem = item;
-    previewTitleEl.textContent = item.name;
-    previewBodyEl.innerHTML = '';
-    previewEl.classList.add('open');
-    // 防御：如果 _zip 标记丢失但 path 含 ::，自动提取
-    if (!item._zip && item.path && item.path.indexOf('::') > 0) {
-      var _sep = item.path.indexOf('::');
-      item._zip = item.path.substring(0, _sep);
-      item._zipEntry = item.path.substring(_sep + 2);
-    }
-    // —— 压缩包内文件：用 archive-extract 预览（全类型对齐普通文件）——
-    if (item._zip) {
-      var zipUrl = '/api/archive-extract?path=' + enc(item._zip) + '&entry=' + enc(item._zipEntry);
-      var zipDlUrl = zipUrl;
-      var zExt = normExt(item.ext);
-      var zIsImg = ['jpg','jpeg','jpe','jfif','png','gif','webp','svg','bmp','ico','avif','apng','tiff','tif','heic','heif'].indexOf(zExt) >= 0;
-      var zIsVid = ['mp4','webm','mkv','mov','avi','ogv'].indexOf(zExt) >= 0;
-      var zIsAud = ['mp3','wav','flac','m4a','ogg','aac'].indexOf(zExt) >= 0;
-      var zIsPdf = zExt === 'pdf';
-      var zIsOffice = ['doc','docx','xls','xlsx','ppt','pptx'].indexOf(zExt) >= 0;
-      var zIsDesign = ['psd','psb','ai'].indexOf(zExt) >= 0;
-      var zIsText = ['txt','text','md','markdown','json','json5','jsonc','js','mjs','cjs',
-        'ts','jsx','tsx','html','htm','css','scss','less','xml','yml','yaml','toml','ini',
-        'conf','cfg','env','log','csv','tsv','sh','bash','bat','cmd','ps1','py','rb','go',
-        'rs','java','c','h','cpp','hpp','cs','php','sql','vue','svelte','lua','pl','kt',
-        'swift','dart','r','tex','rst','asm','s','gradle','properties','lock','diff','patch',
-        'gitignore','gitattributes','dockerfile','makefile'].indexOf(zExt) >= 0;
-      var zNoExt = !zExt;
-      if (zIsImg) {
-        var zTok = ++previewToken;
-        var zImg = document.createElement('img');
-        zImg.alt = item.name;
-        var zRetried = false;
-        zImg.onerror = function () {
-          if (zTok !== previewToken) return;
-          if (!zRetried) { zRetried = true; zImg.src = zipUrl + '&retry=' + Date.now(); return; }
-          previewBodyEl.innerHTML = '';
-          renderFallback(item, zipDlUrl, '无法加载图片');
-        };
-        zImg.src = zipUrl;
-        previewBodyEl.appendChild(zImg);
-        addPreviewActions(item, zipDlUrl);
-      } else if (zIsVid) {
-        var zVid = document.createElement('video');
-        zVid.src = zipUrl; zVid.controls = true; zVid.preload = 'metadata';
-        previewBodyEl.appendChild(zVid);
-        addPreviewActions(item, zipDlUrl);
-      } else if (zIsAud) {
-        var zAud = document.createElement('audio');
-        zAud.src = zipUrl; zAud.controls = true;
-        previewBodyEl.appendChild(zAud);
-        addPreviewActions(item, zipDlUrl);
-      } else if (zIsPdf) {
-        var zIfr = document.createElement('iframe');
-        zIfr.src = zipUrl;
-        previewBodyEl.appendChild(zIfr);
-        addPreviewActions(item, zipDlUrl);
-      } else if (zIsOffice) {
-        var zOLoad = document.createElement('div');
-        zOLoad.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-        zOLoad.textContent = '加载中...';
-        previewBodyEl.appendChild(zOLoad);
-        var zOTok = ++previewToken;
-        apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
-          if (zOTok !== previewToken) return;
-          previewBodyEl.innerHTML = '';
-          if (r.type === 'html') {
-            var wrap = document.createElement('div');
-            wrap.className = 'office-html';
-            if (window.DOMPurify) { wrap.innerHTML = DOMPurify.sanitize(r.html); }  // P1 #3 修复：文档内容不可信，防 HTML 注入
-          else { wrap.textContent = '预览安全组件缺失，请使用新版 index.html'; }  // 降级保护：无净化器时拒绝注入 HTML
-            previewBodyEl.appendChild(wrap);
-          } else if (r.type === 'xlsx') {
-            renderXlsxPreview(r);
-          } else if (r.type === 'pptx') {
-            renderPptxPreview(r);
-          }
-          addPreviewActions(item, zipDlUrl);
-        }).catch(function (e) {
-          if (zOTok !== previewToken) return;
-          previewBodyEl.innerHTML = '';
-          renderFallback(item, zipDlUrl, e.message);
-        });
-      } else if (zIsDesign) {
-        var zDLoad = document.createElement('div');
-        zDLoad.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-        zDLoad.textContent = '加载中...';
-        previewBodyEl.appendChild(zDLoad);
-        var zDTok = ++previewToken;
-        apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
-          if (zDTok !== previewToken) return;
-          previewBodyEl.innerHTML = '';
-          if (r.type === 'fallback') { renderFallback(item, zipDlUrl, r.message || null); return; }
-          if (r.type === 'image') {
-            var dImg = document.createElement('img');
-            dImg.src = r.dataUrl;
-            dImg.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
-            dImg.alt = item.name;
-            previewBodyEl.appendChild(dImg);
-            var dNote = document.createElement('div');
-            dNote.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
-            dNote.textContent = 'PSD 缩略图预览（完整内容请用 Photoshop 打开）';
-            previewBodyEl.appendChild(dNote);
-          } else if (r.type === 'raw-image') {
-            var dCanvas = document.createElement('canvas');
-            dCanvas.width = r.width; dCanvas.height = r.height;
-            dCanvas.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
-            var dCtx = dCanvas.getContext('2d');
-            var dImgData = dCtx.createImageData(r.width, r.height);
-            var dBin = atob(r.data);
-            for (var di = 0; di < dBin.length && di < dImgData.data.length; di++) dImgData.data[di] = dBin.charCodeAt(di);
-            dCtx.putImageData(dImgData, 0, 0);
-            previewBodyEl.appendChild(dCanvas);
-            var dNote2 = document.createElement('div');
-            dNote2.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
-            dNote2.textContent = 'PSD 复合图像预览（图层内容请用 Photoshop 打开）';
-            previewBodyEl.appendChild(dNote2);
-          } else if (r.type === 'pdf') {
-            fetch(zipUrl).then(function (resp) { return resp.blob(); }).then(function (blob) {
-              var pdfBlob = new Blob([blob], { type: 'application/pdf' });
-              var pdfUrl = URL.createObjectURL(pdfBlob);
-              var aiWrap = document.createElement('div');
-              aiWrap.style.cssText = 'width:100%;height:calc(100vh - 220px);';
-              var aiIfr = document.createElement('iframe');
-              aiIfr.src = pdfUrl;
-              aiIfr.style.cssText = 'width:100%;height:100%;border:none;border-radius:6px;background:#fff;';
-              aiWrap.appendChild(aiIfr);
-              previewBodyEl.appendChild(aiWrap);
-            }).catch(function (e) { renderFallback(item, zipDlUrl, e.message); });
-          }
-          addPreviewActions(item, zipDlUrl);
-        }).catch(function (e) {
-          if (zDTok !== previewToken) return;
-          previewBodyEl.innerHTML = '';
-          renderFallback(item, zipDlUrl, e.message);
-        });
-      } else if (zIsText || zNoExt || item.size < 2 * 1048576) {
-        // 文本类/无扩展名/小文件：拉取内容并显示
-        var zTok2 = ++previewToken;
-        fetch(zipUrl, { credentials: 'same-origin' }).then(function (r) {
-          if (!r.ok) throw new Error(r.status);
-          return r.text();
-        }).then(function (txt) {
-          if (zTok2 !== previewToken) return;
-          previewBodyEl.innerHTML = '';
-          var pre = document.createElement('pre');
-          pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;padding:12px;color:var(--text);background:var(--bg-2);border-radius:6px;max-height:70vh;overflow:auto;margin:0;';
-          pre.textContent = txt;
-          previewBodyEl.appendChild(pre);
-          addPreviewActions(item, zipDlUrl);
-        }).catch(function (e) {
-          if (zTok2 !== previewToken) return;
-          previewBodyEl.innerHTML = '';
-          renderFallback(item, zipDlUrl, '无法读取: ' + e.message);
-        });
-        var zWrap = document.createElement('div');
-        zWrap.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-        zWrap.textContent = '加载中...';
-        previewBodyEl.appendChild(zWrap);
-      } else {
-        var zWrap2 = document.createElement('div');
-        zWrap2.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-        zWrap2.textContent = '压缩包内文件 · ' + formatSize(item.size) + ' · 点击下载按钮获取';
-        previewBodyEl.appendChild(zWrap2);
-        addPreviewActions(item, zipDlUrl);
-      }
-      return;
-    }
-    var url = '/api/raw?path=' + enc(item.path);
-    var dlUrl = url + '&download=1';
+  // —— ObjectURL 生命周期管理（审查 #13）：预览创建的 Blob URL 记账，
+  // 切换/关闭预览时统一回收，防止长期运行反复预览 PDF/AI 文件导致 Blob 内存只增不减 ——
+  function trackObjectUrl(u) {
+    if (!state.objectUrls) state.objectUrls = [];
+    state.objectUrls.push(u);
+    return u;
+  }
+  function revokeObjectUrls() {
+    var arr = state.objectUrls || [];
+    for (var i = 0; i < arr.length; i++) { try { URL.revokeObjectURL(arr[i]); } catch (e) {} }
+    state.objectUrls = [];
+  }
+  // —— 预览渲染公共实现（审查 #14）：压缩包内外共用一份 9 类型渲染逻辑，
+  // URL 与文本加载由调用方注入，新增预览类型只需改这一处 ——
+  function renderPreviewContent(item, opt) {
     var ext = normExt(item.ext);
     var isImage = ['jpg','jpeg','jpe','jfif','png','gif','webp','svg','bmp','ico','avif','apng','tiff','tif','heic','heif'].indexOf(ext) >= 0;
     var isVideo = ['mp4','webm','mkv','mov','avi','ogv'].indexOf(ext) >= 0;
@@ -1063,8 +907,6 @@ body {
     var isPdf   = ext === 'pdf';
     var isOffice = ['doc','docx','xls','xlsx','ppt','pptx'].indexOf(ext) >= 0;
     var isDesign = ['psd','psb','ai'].indexOf(ext) >= 0;
-    var isZip = ext === 'zip';
-    var isArchive = ['zip','jar','rar','7z','tar','gz','tgz','bz2','xz'].indexOf(ext) >= 0;
     // 放宽文本扩展名列表：常见文本/代码/配置扩展名均尝试文本预览
     var isText  = ['txt','text','md','markdown','json','json5','jsonc','js','mjs','cjs',
       'ts','jsx','tsx','html','htm','css','scss','less','xml','yml','yaml','toml','ini',
@@ -1083,41 +925,41 @@ body {
         if (iTok !== previewToken) return; // 过期回调不覆盖当前预览（快速切换文件的竞态保护）
         if (!retried) {
           retried = true;
-          img.src = url + '&retry=' + Date.now(); // 换连接重试一次，规避中断请求拖垮连接
+          img.src = opt.url + '&retry=' + Date.now(); // 换连接重试一次，规避中断请求拖垮连接
           return;
         }
         previewBodyEl.innerHTML = '';
-        renderFallback(item, dlUrl, '无法加载图片');
+        renderFallback(item, opt.dlUrl, '无法加载图片');
       };
-      img.src = url;
+      img.src = opt.url;
       previewBodyEl.appendChild(img);
-      addPreviewActions(item, dlUrl);
+      addPreviewActions(item, opt.dlUrl);
     } else if (isVideo) {
       var v = document.createElement('video');
-      v.src = url; v.controls = true; v.preload = 'metadata';
+      v.src = opt.url; v.controls = true; v.preload = 'metadata';
       previewBodyEl.appendChild(v);
-      addPreviewActions(item, dlUrl);
+      addPreviewActions(item, opt.dlUrl);
     } else if (isAudio) {
       var a = document.createElement('audio');
-      a.src = url; a.controls = true;
+      a.src = opt.url; a.controls = true;
       previewBodyEl.appendChild(a);
-      addPreviewActions(item, dlUrl);
+      addPreviewActions(item, opt.dlUrl);
     } else if (isPdf) {
       var ifr = document.createElement('iframe');
-      ifr.src = url;
+      ifr.src = opt.url;
       previewBodyEl.appendChild(ifr);
-      addPreviewActions(item, dlUrl);
+      addPreviewActions(item, opt.dlUrl);
     } else if (isOffice) {
       var loading = document.createElement('div');
-      loading.style.color = 'var(--text-2)';
-      loading.textContent = '加载中…';
+      loading.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
+      loading.textContent = '加载中...';
       previewBodyEl.appendChild(loading);
       var oTok = ++previewToken;
       apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
         if (oTok !== previewToken) return;
         previewBodyEl.innerHTML = '';
         if (r.type === 'html') {
-          // docx: 渲染为 HTML
+          // docx: 渲染为 HTML（文档内容不可信，经 DOMPurify 净化）
           var wrap = document.createElement('div');
           wrap.className = 'office-html';
           if (window.DOMPurify) { wrap.innerHTML = DOMPurify.sanitize(r.html); }  // P1 #3 修复：文档内容不可信，防 HTML 注入
@@ -1130,46 +972,47 @@ body {
           // pptx: 逐页文本
           renderPptxPreview(r);
         }
-        addPreviewActions(item, dlUrl);
+        addPreviewActions(item, opt.dlUrl);
       }).catch(function (e) {
         if (oTok !== previewToken) return;
         previewBodyEl.innerHTML = '';
-        renderFallback(item, dlUrl, e.message);
+        renderFallback(item, opt.dlUrl, e.message);
       });
     } else if (isDesign) {
       var loading = document.createElement('div');
-      loading.style.color = 'var(--text-2)';
-      loading.textContent = '加载中…';
+      loading.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
+      loading.textContent = '加载中...';
       previewBodyEl.appendChild(loading);
       var dTok = ++previewToken;
       apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
         if (dTok !== previewToken) return;
         previewBodyEl.innerHTML = '';
         if (r.type === 'fallback') {
-          renderFallback(item, dlUrl, r.message || null);
+          renderFallback(item, opt.dlUrl, r.message || null);
           return;
         }
         if (r.type === 'pdf') {
           // 用 Blob URL + application/pdf MIME 渲染，避免浏览器自动下载
-          fetch('/api/raw?path=' + enc(item.path)).then(function (resp) {
+          fetch(opt.url).then(function (resp) {
             return resp.blob();
           }).then(function (blob) {
             var pdfBlob = new Blob([blob], { type: 'application/pdf' });
-            var url = URL.createObjectURL(pdfBlob);
-            var aiPdfWrap = document.createElement('div');
-            aiPdfWrap.style.cssText = 'width:100%;height:calc(100vh - 220px);';
-            var aiPdfIframe = document.createElement('iframe');
-            aiPdfIframe.src = url;
-            aiPdfIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:6px;background:#fff;';
-            aiPdfWrap.appendChild(aiPdfIframe);
-            previewBodyEl.appendChild(aiPdfWrap);
-            addPreviewActions(item, dlUrl);
+            var pdfUrl = trackObjectUrl(URL.createObjectURL(pdfBlob));  // 审查 #13：记账，切换/关闭预览时回收
+            var aiWrap = document.createElement('div');
+            aiWrap.style.cssText = 'width:100%;height:calc(100vh - 220px);';
+            var aiIfr = document.createElement('iframe');
+            aiIfr.src = pdfUrl;
+            aiIfr.style.cssText = 'width:100%;height:100%;border:none;border-radius:6px;background:#fff;';
+            aiWrap.appendChild(aiIfr);
+            previewBodyEl.appendChild(aiWrap);
+            addPreviewActions(item, opt.dlUrl);
           }).catch(function (e) {
-            renderFallback(item, dlUrl, e.message);
+            renderFallback(item, opt.dlUrl, e.message);
           });
           return;
         }
         if (r.type === 'image') {
+          // PSD 缩略图
           var img = document.createElement('img');
           img.src = r.dataUrl;
           img.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
@@ -1198,46 +1041,88 @@ body {
           note.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
           note.textContent = 'PSD 复合图像预览（图层内容请用 Photoshop 打开）';
           previewBodyEl.appendChild(note);
-        } else if (r.type === 'pdf') {
-          var ifr = document.createElement('iframe');
-          ifr.src = '/api/raw?path=' + enc(item.path);
-          previewBodyEl.appendChild(ifr);
-          var note = document.createElement('div');
-          note.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
-          note.textContent = 'AI 文件 PDF 兼容预览';
-          previewBodyEl.appendChild(note);
         }
-        addPreviewActions(item, dlUrl);
+        addPreviewActions(item, opt.dlUrl);
       }).catch(function (e) {
         if (dTok !== previewToken) return;
         previewBodyEl.innerHTML = '';
-        renderFallback(item, dlUrl, e.message);
+        renderFallback(item, opt.dlUrl, e.message);
       });
-    } else if (isArchive) {
+    } else if (opt.isArchive) {
       // 压缩包已在列表单击时导航进入；此处理预览窗格直接打开的情况
       previewBodyEl.innerHTML = '';
-      renderFallback(item, dlUrl, null);
+      renderFallback(item, opt.dlUrl, null);
     } else if (isText || noExt || item.size < 2 * 1048576) {
+      // 文本类/无扩展名/小文件：拉取内容并显示
       var loading = document.createElement('div');
-      loading.style.color = 'var(--text-2)';
-      loading.textContent = '加载中…';
+      loading.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
+      loading.textContent = '加载中...';
       previewBodyEl.appendChild(loading);
       var tTok = ++previewToken;
-      apiGet('/api/read?path=' + enc(item.path)).then(function (r) {
+      opt.loadText().then(function (txt) {
         if (tTok !== previewToken) return;
         previewBodyEl.innerHTML = '';
         var pre = document.createElement('pre');
-        pre.textContent = r.content;
+        if (opt.preStyle) pre.style.cssText = opt.preStyle;
+        pre.textContent = txt;
         previewBodyEl.appendChild(pre);
-        addPreviewActions(item, dlUrl);
+        addPreviewActions(item, opt.dlUrl);
       }).catch(function (e) {
         if (tTok !== previewToken) return;
         previewBodyEl.innerHTML = '';
-        renderFallback(item, dlUrl, e.message);
+        renderFallback(item, opt.dlUrl, (opt.loadTextPrefix || '') + e.message);
       });
     } else {
-      renderFallback(item, dlUrl, null);
+      if (opt.fallbackInfo) {
+        var info = document.createElement('div');
+        info.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
+        info.textContent = opt.fallbackInfo;
+        previewBodyEl.appendChild(info);
+        addPreviewActions(item, opt.dlUrl);
+      } else {
+        renderFallback(item, opt.dlUrl, null);
+      }
     }
+  }
+  function previewFile(item) {
+    revokeObjectUrls();   // 审查 #13：切换预览先回收上次创建的 Blob URL
+    state.previewItem = item;
+    previewTitleEl.textContent = item.name;
+    previewBodyEl.innerHTML = '';
+    previewEl.classList.add('open');
+    // 防御：如果 _zip 标记丢失但 path 含 ::，自动提取
+    if (!item._zip && item.path && item.path.indexOf('::') > 0) {
+      var _sep = item.path.indexOf('::');
+      item._zip = item.path.substring(0, _sep);
+      item._zipEntry = item.path.substring(_sep + 2);
+    }
+    // —— 压缩包内文件：内容由 archive-extract 提供，渲染与普通文件共用（审查 #14）——
+    if (item._zip) {
+      var zipUrl = '/api/archive-extract?path=' + enc(item._zip) + '&entry=' + enc(item._zipEntry);
+      renderPreviewContent(item, {
+        url: zipUrl,
+        dlUrl: zipUrl,
+        loadText: function () {
+          return fetch(zipUrl, { credentials: 'same-origin' }).then(function (r) {
+            if (!r.ok) throw new Error(r.status);
+            return r.text();
+          });
+        },
+        loadTextPrefix: '无法读取: ',
+        preStyle: 'white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;padding:12px;color:var(--text);background:var(--bg-2);border-radius:6px;max-height:70vh;overflow:auto;margin:0;',
+        fallbackInfo: '压缩包内文件 · ' + formatSize(item.size) + ' · 点击下载按钮获取'
+      });
+      return;
+    }
+    var url = '/api/raw?path=' + enc(item.path);
+    renderPreviewContent(item, {
+      url: url,
+      dlUrl: url + '&download=1',
+      isArchive: ['zip','jar','rar','7z','tar','gz','tgz','bz2','xz'].indexOf(normExt(item.ext)) >= 0,
+      loadText: function () {
+        return apiGet('/api/read?path=' + enc(item.path)).then(function (r) { return r.content; });
+      }
+    });
   }
   function addPreviewActions(item, dlUrl) {
     if (previewBodyEl.querySelector('.preview-actions')) return;
@@ -1527,7 +1412,7 @@ body {
     $('btn-group').classList.toggle('toggled', state.group);
     renderList();
   };
-  $('preview-close').onclick = function () { previewEl.classList.remove('open'); };
+  $('preview-close').onclick = function () { previewEl.classList.remove('open'); revokeObjectUrls(); };  // 审查 #13：关闭预览回收 Blob URL
 
   // —— 预览面板拖拽调宽 ——
   (function () {
