@@ -306,6 +306,7 @@ body {
       <span class="title" id="preview-title"></span>
       <button class="icon-btn" id="preview-open" title="用系统程序打开">📂</button>
       <button class="icon-btn" id="preview-download" title="下载">⬇</button>
+      <button class="icon-btn" id="preview-delete" title="删除">🗑</button>
       <button class="icon-btn" id="preview-close" title="关闭">✕</button>
     </header>
     <div class="preview-body" id="preview-body"></div>
@@ -444,24 +445,43 @@ body {
     }, 3000);
   }
   var modalResolve = null;
+  var modalMode = 'input';   // 'input' | 'confirm'
   function openModal(title, def) {
     return new Promise(function (resolve) {
       modalResolve = resolve;
+      modalMode = 'input';
       modalTitle.textContent = title;
+      modalTitle.style.whiteSpace = '';
+      modalInput.style.display = '';
       modalInput.value = def || '';
       modalBg.classList.add('show');
       setTimeout(function () { modalInput.focus(); modalInput.select(); }, 30);
+    });
+  }
+  // 友好确认框（替代原生 confirm/alert）：纯确认、支持换行、Esc/点遮罩取消
+  function openConfirm(msg) {
+    return new Promise(function (resolve) {
+      modalResolve = resolve;
+      modalMode = 'confirm';
+      modalTitle.textContent = msg;
+      modalTitle.style.whiteSpace = 'pre-line';
+      modalInput.style.display = 'none';
+      modalBg.classList.add('show');
+      setTimeout(function () { $('modal-ok').focus(); }, 30);
     });
   }
   function closeModal(v) {
     modalBg.classList.remove('show');
     if (modalResolve) { modalResolve(v); modalResolve = null; }
   }
-  $('modal-ok').onclick = function () { closeModal(modalInput.value.trim()); };
+  $('modal-ok').onclick = function () { closeModal(modalMode === 'confirm' ? true : modalInput.value.trim()); };
   $('modal-cancel').onclick = function () { closeModal(null); };
   modalInput.onkeydown = function (e) {
     if (e.key === 'Enter') closeModal(modalInput.value.trim());
     else if (e.key === 'Escape') closeModal(null);
+  };
+  modalBg.onkeydown = function (e) {   // 确认模式：Esc 取消（Enter 由聚焦的确定按钮触发）
+    if (e.key === 'Escape') { e.preventDefault(); closeModal(null); }
   };
   modalBg.onclick = function (e) { if (e.target === modalBg) closeModal(null); };
 
@@ -1340,17 +1360,20 @@ body {
     var isDir = item.type === 'dir';
     var msg = '确定删除 "' + item.name + '" 吗？';
     if (isDir) msg += '\n（文件夹及其所有内容都会被删除）';
-    if (!confirm(msg)) return;
-    apiPost('/api/rm', { path: item.path, recursive: isDir })
-      .then(function () {
-        if (state.selected && state.selected.path === item.path) state.selected = null;
-        if (state.previewItem && state.previewItem.path === item.path) {
-          state.previewItem = null;
-          previewEl.classList.remove('open');
-        }
-        reload();
-      })
-      .catch(function (e) { showToast('删除失败: ' + e.message, 'error'); });
+    openConfirm(msg).then(function (ok) {
+      if (!ok) return;
+      apiPost('/api/rm', { path: item.path, recursive: isDir })
+        .then(function () {
+          if (state.selected && state.selected.path === item.path) state.selected = null;
+          if (state.previewItem && state.previewItem.path === item.path) {
+            state.previewItem = null;
+            previewEl.classList.remove('open');
+          }
+          showToast('已删除 "' + item.name + '"');
+          reload();
+        })
+        .catch(function (e) { showToast('删除失败: ' + e.message, 'error'); });
+    });
   }
   // 复制到…：弹出目标路径输入框，确认后调用 /api/cp（后端递归复制）
   function doCopy(item) {
@@ -1498,6 +1521,10 @@ body {
     if (!item) return;
     apiPost('/api/open', { path: item.path });
   };
+  $('preview-delete').onclick = function () {
+    var item = state.previewItem;
+    if (item) doDelete(item);
+  };
   $('preview-download').onclick = function () {
     var item = state.previewItem;
     if (!item) return;
@@ -1550,7 +1577,9 @@ body {
     if (!contextMenuEl.contains(e.target)) hideContextMenu();
   });
   document.addEventListener('keydown', function (e) {
-    if (e.target.tagName === 'INPUT') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' ||
+        e.target.tagName === 'SELECT' || e.target.isContentEditable) return;
+    if (modalBg.classList.contains('show')) return;   // 弹窗打开时不触发列表快捷键
     if (e.key === 'F5') { e.preventDefault(); reload(); return; }
     if (e.key === 'Backspace') { e.preventDefault(); navUp(); return; }
     if (e.key === 'Enter' && state.selected) { openItem(state.selected); return; }
