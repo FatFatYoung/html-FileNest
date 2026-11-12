@@ -1265,6 +1265,7 @@ body {
       d.querySelector('span:last-child').textContent = label;
       d.onclick = function () { hideContextMenu(); fn(); };
       contextMenuEl.appendChild(d);
+      return d;
     };
     var sep = function () {
       var d = document.createElement('div');
@@ -1323,9 +1324,18 @@ body {
       if (state.current && state.current.path.indexOf('::') > 0) {
         add('刷新', '⟳', reload);
       } else {
-        add('新建', '➕', function () {
-          showNewMenu(parseInt(contextMenuEl.style.left) + 20, parseInt(contextMenuEl.style.top));
+        var newTrigger = add('新建', '➕', function () {
+          if (!newMenuEl.classList.contains('show')) {
+            showNewMenu(parseInt(contextMenuEl.style.left) + 24, parseInt(contextMenuEl.style.top) - 4);
+          }
         });
+        if (newTrigger) {
+          newTrigger.addEventListener('mouseenter', function () {
+            var r = newTrigger.getBoundingClientRect();
+            showNewMenu(r.right - 4, r.top - 4);   // 右侧展开二级菜单
+          });
+          newTrigger.addEventListener('mouseleave', scheduleHideNewMenu);
+        }
         add('上传文件', '⬆', function () { fileInput.click(); });
         sep();
         add('刷新', '⟳', reload);
@@ -1369,6 +1379,7 @@ body {
   var newMenuEl = $('new-menu');
   var newTypes = null, newMenuOpenAt = 0;
   function showNewMenu(x, y) {
+    clearTimeout(newMenuTimer);
     newMenuOpenAt = Date.now();
     newMenuEl.innerHTML = '';
     function item(label, ico, fn) {
@@ -1396,6 +1407,13 @@ body {
     newMenuEl.style.top  = y + 'px';
   }
   function hideNewMenu() { newMenuEl.classList.remove('show'); }
+  var newMenuTimer = null;
+  function scheduleHideNewMenu() {           // 移走后 150ms 自动消失（缓冲：移到菜单路上不闪断）
+    clearTimeout(newMenuTimer);
+    newMenuTimer = setTimeout(hideNewMenu, 150);
+  }
+  newMenuEl.addEventListener('mouseenter', function () { clearTimeout(newMenuTimer); });
+  newMenuEl.addEventListener('mouseleave', scheduleHideNewMenu);
   function loadNewTypes() {
     fetch('/api/newfile-types', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
@@ -1507,10 +1525,15 @@ body {
   $('btn-fwd').onclick = navFwd;
   $('btn-up').onclick = navUp;
   $('btn-refresh').onclick = reload;
+  $('btn-new').addEventListener('mouseenter', function () {
+    var r = $('btn-new').getBoundingClientRect();
+    showNewMenu(r.right + 4, r.top);       // 右侧展开二级菜单
+  });
+  $('btn-new').addEventListener('mouseleave', scheduleHideNewMenu);
   $('btn-new').onclick = function (e) {
     e.stopPropagation();
     var r = $('btn-new').getBoundingClientRect();
-    showNewMenu(r.left, r.bottom + 4);
+    showNewMenu(r.right + 4, r.top);
   };
   $('btn-goto').onclick = doGoto;
   $('btn-upload').onclick = function () { fileInput.click(); };
