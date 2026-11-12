@@ -180,7 +180,7 @@ Config values support `${VAR}` syntax for dynamic expansion:
 - **Open with system handler** — Double-click or use the 📂 button in the preview header
 - **Context menu** — Right-click for Open, Preview, Reveal, Rename, Copy to…, Move to…, Delete; archive files show Preview / Download / Open with system handler
 - **Drag & drop upload** — Drag files into the window to upload
-- **Keyboard shortcuts** — `Backspace` (up), `Alt+←/→` (back/forward), `F5` (refresh), `Ctrl+B` (collapse/expand sidebar), `Ctrl+Shift+N` (new folder), `Ctrl+U` (upload)
+- **Keyboard shortcuts** — `Enter` (open selected), `Delete` (delete selected), `F2` (rename), `Backspace` (up), `Alt+←/→` (back/forward), `F5` (refresh), `Ctrl+B` (collapse/expand sidebar), `Ctrl+L` (path bar), `Ctrl+Shift+N` (new folder), `Ctrl+U` (upload)
 
 ## Uninstall
 
@@ -235,6 +235,9 @@ html-FileNest/
 **Unreleased**
 - UI: collapsible sidebar — collapse/expand the directory tree from a toolbar button or `Ctrl+B`; the preference persists across sessions.
 - UI: "Desktop" entry alongside the drives on the "All Locations" page — opens the user's Desktop folder like any directory. The path is resolved by the new `/api/desktop` endpoint (redirected Desktops via the User Shell Folders registry key; configured `roots` restrictions respected).
+- UI: friendly delete confirmation — deletion asks via the in-app dialog (multiline message, Esc / click-outside cancels) instead of the browser's native confirm/alert; success shows a status toast.
+- UI: delete button in the preview header (next to download) deletes the file currently being previewed through the same confirmation flow.
+- Keyboard: `Enter` opens the selected item (double-click equivalent) and `Delete` deletes it via the confirm dialog. Shortcuts no longer fire while typing in inputs / the preview text editor, or while a dialog is open.
 - Fix: UI file lifecycle. Installing or upgrading now always refreshes `index.html` to the new version's UI — previously a leftover `index.html` from an old install was never overwritten, so UI updates never reached the deployment. The replaced file is backed up to `index.html.bak` first, and launching from the installed location still leaves the UI untouched so user customizations survive restarts. `--uninstall` now also removes `index.html` and `index.html.bak` (previously they were left behind and poisoned the next install).
 
 **v1.4.2.3 (Latest)**
