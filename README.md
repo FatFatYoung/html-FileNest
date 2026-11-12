@@ -89,7 +89,6 @@ All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `
 | GET | `/api/roots` | List configured root directories |
 | GET | `/api/drives` | List available drives (A–Z) |
 | GET | `/api/desktop` | List the user's Desktop folder (path + entries) |
-| GET | `/api/desktop-wallpaper` | Current system desktop wallpaper image (Desktop module background) |
 | GET | `/api/ls?path=<dir>` | List directory contents |
 | GET | `/api/stat?path=<abs>` | Get file/directory metadata |
 | GET | `/api/raw?path=<abs>` | Stream file content (supports Range) |
@@ -171,7 +170,7 @@ Config values support `${VAR}` syntax for dynamic expansion:
 - **Grid / List views** — Toggle between visual grid and detailed list
 - **Directory tree sidebar** — Clickable tree showing current path hierarchy and subdirectories; "All Locations" root node for quick return
 - **Collapsible sidebar** — Collapse/expand the directory tree via the toolbar button or `Ctrl+B`; the choice is remembered across sessions
-- **Desktop module** — The "All Locations" page shows a Desktop area styled like the system desktop: the system desktop wallpaper is the module's background and the Desktop folder's files are displayed directly on it as icons (same click behavior as the main list)
+- **Desktop entry** — The "All Locations" page shows a "Desktop" folder entry alongside the drives, opening the user's Desktop folder like any directory
 - **Filename search** — Filter files in the current directory from the toolbar
 - **Sorting** — Sort by name, size, modified time, or type (ascending/descending)
 - **Grouping** — Group files by category (folders, documents, images, videos, etc.)
@@ -235,7 +234,7 @@ html-FileNest/
 
 **Unreleased**
 - UI: collapsible sidebar — collapse/expand the directory tree from a toolbar button or `Ctrl+B`; the preference persists across sessions.
-- UI: Desktop module on the "All Locations" page — a single area styled like the real desktop: the system desktop wallpaper is the area's background and the Desktop folder's files are shown directly on it as icons (same click behavior as the main list). The wallpaper is served by the new `/api/desktop-wallpaper` endpoint (TranscodedWallpaper first, then the `HKCU` `WallPaper` registry value). A new `/api/desktop` endpoint returns the Desktop path and entries (redirected Desktops resolved via the User Shell Folders registry key); both endpoints respect configured `roots` restrictions.
+- UI: "Desktop" entry alongside the drives on the "All Locations" page — opens the user's Desktop folder like any directory. The path is resolved by the new `/api/desktop` endpoint (redirected Desktops via the User Shell Folders registry key; configured `roots` restrictions respected).
 - Fix: UI file lifecycle. Installing or upgrading now always refreshes `index.html` to the new version's UI — previously a leftover `index.html` from an old install was never overwritten, so UI updates never reached the deployment. The replaced file is backed up to `index.html.bak` first, and launching from the installed location still leaves the UI untouched so user customizations survive restarts. `--uninstall` now also removes `index.html` and `index.html.bak` (previously they were left behind and poisoned the next install).
 
 **v1.4.2.3 (Latest)**
