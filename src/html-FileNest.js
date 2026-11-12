@@ -409,7 +409,6 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/roots')  return listRoots(res, cfg);
       if (p === '/api/drives') return listDrives(res);
       if (p === '/api/desktop') return await desktopInfo(res, cfg);
-      if (p === '/api/desktop-wallpaper') return desktopWallpaper(res);
       if (p === '/api/ls')     return await listDir(res, q, cfg);
       if (p === '/api/stat')   return await statPath(res, q, cfg);
       if (p === '/api/raw')    return await streamFile(req, res, q, cfg);
@@ -559,43 +558,6 @@ async function desktopInfo(res, cfg) {
   sendJson(res, 200, { ok: true, path: dir, items: items });
 }
 
-function desktopWallpaper(res) {
-  // 继承系统桌面壁纸：TranscodedWallpaper（当前壁纸的 JPEG 副本）→ 注册表 WallPaper 指向的文件
-  const candidates = [];
-  try {
-    candidates.push(path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Themes', 'TranscodedWallpaper'));
-  } catch (_) {}
-  for (const c of candidates) {
-    try {
-      const st = fs.statSync(c);
-      if (st.isFile() && st.size > 0) return sendWallpaperFile(res, c, '.jpg');
-    } catch (_) {}
-  }
-  try {
-    const q = spawnSync('reg', ['query', 'HKCU\\Control Panel\\Desktop', '/v', 'WallPaper'],
-      { encoding: 'utf8', windowsHide: true });
-    if (q.status === 0) {
-      const m = String(q.stdout).match(/WallPaper\s+REG_(?:EXPAND_)?SZ\s+(.+)/i);
-      const wp = m && m[1] ? m[1].trim() : '';
-      if (wp && fs.existsSync(wp)) {
-        return sendWallpaperFile(res, wp, path.extname(wp).toLowerCase() || '.jpg');
-      }
-    }
-  } catch (_) {}
-  return sendJson(res, 404, { ok: false, error: 'no wallpaper' });
-}
-
-function sendWallpaperFile(res, file, ext) {
-  const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.bmp': 'image/bmp' };
-  const st = fs.statSync(file);
-  res.writeHead(200, {
-    'Content-Type': mimeMap[ext] || 'image/jpeg',
-    'Content-Length': st.size,
-    'Cache-Control': 'public, max-age=300',
-    'X-Content-Type-Options': 'nosniff'
-  });
-  fs.createReadStream(file).pipe(res);
-}
 
 async function listDir(res, q, cfg) {
   const dir = resolveAllowedPath(q.path, cfg);
