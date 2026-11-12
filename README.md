@@ -227,7 +227,11 @@ html-FileNest/
 
 ## Changelog
 
-**v1.4.1.2 (Latest)**
+**v1.4.2.1 (Latest)**
+- Security: fixed command injection in `/api/open`. The endpoint used `cmd.exe /c start`, where `cmd.exe` interprets shell metacharacters (`&`, `|`, …) — a crafted filename could execute arbitrary commands. It now launches files via `explorer.exe` (argv passing, no shell interpretation) with a `rundll32 url.dll,FileProtocolHandler` fallback, matching the `/open` file-op implementation.
+- `/api/open` now rejects paths/entries containing Windows-invalid filename characters (quotes, `<>|*?`, control chars) as an extra hardening layer. Legal metacharacters (`&`, `%`, …) remain allowed since they are inert in argv passing.
+
+**v1.4.1.2**
 - Security: `blockedExtensions` is now enforced on `/api/raw`, `/api/read`, `/api/archive-extract` and `/api/open`. Previously only the `/open`/`/reveal` file ops checked it, so blocked executables could still be downloaded, read or opened directly through the API.
 - `checkExtension` now ignores trailing dots/spaces before matching (prevents `evil.exe.` / `evil.exe ` bypasses, since Windows silently strips them).
 

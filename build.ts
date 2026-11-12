@@ -29,7 +29,7 @@ await Bun.build({
       title: "html-FileNest",
       description: "html-FileNest - Local File Manager",
       publisher: "https://github.com/FatFatYoung",
-      version: "1.4.1.2",
+      version: "1.4.2.1",
       copyright: "© 2026 FatFatYoung. All rights reserved.",
     },
   },

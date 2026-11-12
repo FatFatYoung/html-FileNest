@@ -25,7 +25,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '1.4.1.2';
+const SERVICE_VER = '1.4.2.1';
 const HOST        = '127.0.0.1';
 const INSTALL_DIR = 'C:\\html-FileNest';
 const EXE_PATH    = path.join(INSTALL_DIR, 'html-FileNest.exe');
@@ -1386,9 +1386,31 @@ async function writeFileOp(res, data, cfg) {
 }
 
 // —— 用系统默认程序打开文件/文件夹 ——
+// explorer.exe 参数数组传递，不经任何 shell 解释（防命令注入；勿改回 cmd /c start）
+function openWithSystem(targetPath) {
+  const child = spawn('explorer.exe', [targetPath], {
+    windowsHide: true, detached: true, stdio: 'ignore'
+  });
+  child.on('error', () => {
+    try {
+      spawn('rundll32.exe', ['url.dll,FileProtocolHandler', targetPath], {
+        windowsHide: true, detached: true, stdio: 'ignore'
+      }).unref();
+    } catch (_) {}
+  });
+  child.unref();
+}
+
+// Windows 非法文件名字符（含控制字符）：出现即异常，拒绝零误伤。
+// 合法元字符（& % ^ !）无需拦截——explorer.exe 参数数组传递无 shell 解释路径。
+function hasUnsafeName(p) {
+  return /["<>|*?\u0000-\u001f]/.test(String(p || ''));
+}
+
 async function openOp(res, data, cfg) {
   const extCheck = checkExtension(data.path || '', cfg);
   if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
+  if (hasUnsafeName(data.path || '')) return sendJson(res, 400, { ok: false, error: 'invalid characters in path' });
   // 压缩包虚拟路径（path.ext::entry）→ 提取到临时文件后打开
   const zipSep = (data.path || '').indexOf('::');
   if (zipSep > 0) {
@@ -1396,6 +1418,7 @@ async function openOp(res, data, cfg) {
     const entry = data.path.substring(zipSep + 2);
     const entryExtCheck = checkExtension(entry, cfg);
     if (!entryExtCheck.ok) return sendJson(res, 403, { ok: false, error: entryExtCheck.reason });
+    if (hasUnsafeName(entry)) return sendJson(res, 400, { ok: false, error: 'invalid characters in entry' });
     const archiveFull = resolveAllowedPath(archivePath, cfg);
     if (!fs.existsSync(archiveFull)) throw new Error('archive not found');
     const content = await extractEntryFromArchive(archiveFull, entry);
@@ -1405,12 +1428,12 @@ async function openOp(res, data, cfg) {
     const base = path.basename(entry);
     const tmpFile = path.join(tmpDir, Date.now() + '_' + base);
     await fs.promises.writeFile(tmpFile, content);
-    spawn('cmd.exe', ['/c', 'start', '', tmpFile], { detached: true, stdio: 'ignore' }).unref();
+    openWithSystem(tmpFile);
     return sendJson(res, 200, { ok: true, path: tmpFile, extracted: true });
   }
   const target = resolveAllowedPath(data.path, cfg);
   if (!fs.existsSync(target)) throw new Error('path not found');
-  spawn('cmd.exe', ['/c', 'start', '', target], { detached: true, stdio: 'ignore' }).unref();
+  openWithSystem(target);
   sendJson(res, 200, { ok: true, path: target });
 }
 
