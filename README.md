@@ -227,11 +227,12 @@ html-FileNest/
 
 ## Changelog
 
-**Unreleased**
-- License compliance: full third-party license texts (Bun, JSZip, mammoth, word-extractor, SheetJS, 7-Zip notice) are now embedded inside the executable. Run `html-FileNest.exe --licenses` to display them at any time.
+**v1.4.2.2 (Latest)**
+- Security: fixed HTML injection in Office document preview (P1 #3). Preview HTML (mammoth output for DOCX) was assigned to `innerHTML` unsanitized — a crafted document could execute script in the app origin. All preview HTML now passes DOMPurify 3.4.17 (vendored pinned copy); the file-tree error message (which can embed hostile filenames) is sanitized as well.
+- License compliance: full third-party license texts (Bun, JSZip, mammoth, word-extractor, SheetJS, DOMPurify, 7-Zip notice) are now embedded inside the executable. Run `html-FileNest.exe --licenses` to display them at any time.
 - Docs: corrected the SheetJS license note — v0.20.3 (SheetJS CDN) is Apache-2.0, same license as before; the previous "newer versions use a different license" statement was outdated.
 
-**v1.4.2.1 (Latest)**
+**v1.4.2.1**
 - Security: fixed command injection in `/api/open`. The endpoint used `cmd.exe /c start`, where `cmd.exe` interprets shell metacharacters (`&`, `|`, …) — a crafted filename could execute arbitrary commands. It now launches files via `explorer.exe` (argv passing, no shell interpretation) with a `rundll32 url.dll,FileProtocolHandler` fallback, matching the `/open` file-op implementation.
 - `/api/open` now rejects paths/entries containing Windows-invalid filename characters (quotes, `<>|*?`, control chars) as an extra hardening layer. Legal metacharacters (`&`, `%`, …) remain allowed since they are inert in argv passing.
 
@@ -287,6 +288,7 @@ html-FileNest/
 | [mammoth](https://www.npmjs.com/package/mammoth) | DOCX → HTML conversion for document preview | BSD-2-Clause |
 | [word-extractor](https://www.npmjs.com/package/word-extractor) | Legacy .doc (OLE2) text extraction | MIT |
 | [SheetJS (xlsx)](https://sheetjs.com) | XLSX/XLS spreadsheet parsing for table preview | Apache-2.0 |
+| [DOMPurify](https://github.com/cure53/DOMPurify) | HTML sanitization for document preview (XSS/HTML injection defense) | Apache-2.0 (elected from MPL-2.0 OR Apache-2.0) |
 | [JSZip](https://stuk.github.io/jszip/) | ZIP/JAR archive browsing/extract + PPTX slide text parsing | MIT/GPL-3.0 |
 | [7-Zip](https://www.7-zip.org) | RAR/7Z/BZ2/XZ archive listing & extraction (CLI, runtime dependency) | LGPL-2.1+ |
 
