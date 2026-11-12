@@ -98,6 +98,7 @@ All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `
 | GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List archive contents (ZIP/JAR/TAR/GZ/TGZ/RAR/7Z, virtual directory) |
 | GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from archive (multi-format) |
 | POST | `/api/mkdir` | Create folder `{path, name}` |
+| POST | `/api/mkfile` | Create an empty file `{path, name}` (fails if the name exists) |
 | POST | `/api/rename` | Rename `{path, newName}` |
 | POST | `/api/rm` | Delete `{path, recursive?}` |
 | POST | `/api/mv` | Move `{from, to}` |
@@ -236,6 +237,7 @@ html-FileNest/
 - UI: collapsible sidebar — collapse/expand the directory tree from a toolbar button or `Ctrl+B`; the preference persists across sessions.
 - UI: "Desktop" entry alongside the drives on the "All Locations" page — opens the user's Desktop folder like any directory. The path is resolved by the new `/api/desktop` endpoint (redirected Desktops via the User Shell Folders registry key; configured `roots` restrictions respected).
 - UI: friendly delete confirmation — deletion asks via the in-app dialog (multiline message, Esc / click-outside cancels) instead of the browser's native confirm/alert; success shows a status toast.
+- UI: "New file" alongside "New folder" — toolbar button and blank-area context menu create an empty file in the current folder via the new `POST /api/mkfile` (never overwrites an existing name).
 - UI: delete button in the preview header (next to download) deletes the file currently being previewed through the same confirmation flow.
 - Keyboard: `Enter` opens the selected item (double-click equivalent) and `Delete` deletes it via the confirm dialog. Shortcuts no longer fire while typing in inputs / the preview text editor, or while a dialog is open.
 - Fix: UI file lifecycle. Installing or upgrading now always refreshes `index.html` to the new version's UI — previously a leftover `index.html` from an old install was never overwritten, so UI updates never reached the deployment. The replaced file is backed up to `index.html.bak` first, and launching from the installed location still leaves the UI untouched so user customizations survive restarts. `--uninstall` now also removes `index.html` and `index.html.bak` (previously they were left behind and poisoned the next install).
