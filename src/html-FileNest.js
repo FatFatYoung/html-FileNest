@@ -1620,10 +1620,12 @@ async function mkdirOp(res, data, cfg) {
 async function mkfileOp(res, data, cfg) {
   const dir = resolveAllowedPath(data.path, cfg);
   const name = String(data.name || '').trim();
-  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..') {
+  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..' || /[. ]$/.test(name)) {
     throw new Error('invalid file name');
   }
-  const full = path.win32.join(dir, name);
+  const full = resolveAllowedPath(path.win32.join(dir, name), cfg);
+  const extCheck = checkExtension(full, cfg);
+  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   await fs.promises.writeFile(full, '', { flag: 'wx' });   // 已存在则报错，绝不覆盖
   sendJson(res, 200, { ok: true, path: full });
 }
