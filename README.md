@@ -100,6 +100,9 @@ All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `
 | POST | `/api/mkdir` | Create folder `{path, name}` |
 | POST | `/api/mkfile` | Create an empty file `{path, name}` (fails if the name exists) |
 | GET | `/api/newfile-types` | File types registered in the Windows "New" context menu (registry `ShellNew`) |
+| GET | `/api/favorites` | List favorite folders/files |
+| POST | `/api/favorites` | Add a favorite `{path, type}` |
+| POST | `/api/unfavorite` | Remove a favorite `{path}` |
 | POST | `/api/rename` | Rename `{path, newName}` |
 | POST | `/api/rm` | Delete `{path, recursive?}` |
 | POST | `/api/mv` | Move `{from, to}` |
@@ -240,6 +243,7 @@ html-FileNest/
 - UI: friendly delete confirmation — deletion asks via the in-app dialog (multiline message, Esc / click-outside cancels) instead of the browser's native confirm/alert; success shows a status toast.
 - UI: "New file" alongside "New folder" — toolbar button and blank-area context menu create an empty file in the current folder via the new `POST /api/mkfile` (never overwrites an existing name).
 - UI: network shares in "All locations" — mapped network drives, remembered UNC shares and active SMB connections (remote shares on the user's machine) are listed alongside local drives with a 🌐 marker (via `net` in `GET /api/drives`, refreshed every 60s); UNC paths stay directly navigable.
+- UI: "My Favorites" (我的收藏) — a favorites module below the drives on the All-Locations page plus a folder node in the sidebar; right-click any file/folder and pick "收藏到首页 / 取消收藏" (toggle), or use the ☆ button in the preview pane header. Persisted to `favorites.json` (new `GET/POST /api/favorites`, `POST /api/unfavorite`).
 - UI: unified "New" (新建) menu — "New folder" and "New file" merge into one hover flyout menu (expands to the right on mouse-over, auto-closes when the pointer leaves) listing folder plus every file type registered in the Windows "New" context menu (live from registry `ShellNew` via `GET /api/newfile-types`); the create dialog pre-fills the matching extension and auto-appends it if removed.
 - UI: delete button in the preview header (next to download) deletes the file currently being previewed through the same confirmation flow.
 - Keyboard: `Enter` opens the selected item (double-click equivalent) and `Delete` deletes it via the confirm dialog. Shortcuts no longer fire while typing in inputs / the preview text editor, or while a dialog is open.
