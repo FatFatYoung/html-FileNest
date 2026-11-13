@@ -469,12 +469,71 @@ function readBody(req, limit = 10 * 1024 * 1024) {
   });
 }
 
+// 绝对路径归一。UNC（\\host[\...]）必须手工归一：
+// path.win32.normalize 会把只有主机名的 \\host 错误吞成 \host，导致共享盘主机根入口
+// 过不了绝对路径校验（打不开）；两级以上 \\host\share 不受影响（2026-11-13 修）
+function normalizeAbs(s) {
+  const m = s.match(/^[\\/]{2}(.*)$/);
+  if (m) {
+    const parts = m[1].split(/[\\/]+/).filter(Boolean);
+    if (!parts.length) throw new Error('invalid path');
+    let tail = parts.slice(1).join('\\');
+    if (tail) {
+      tail = path.win32.normalize(tail).replace(/[\\/]+$/, '');
+      if (tail === '.' || tail === '') tail = '';
+      else if (tail === '..' || tail.startsWith('..\\')) throw new Error('invalid path');
+    }
+    return '\\\\' + parts[0] + (tail ? '\\' + tail : '');
+  }
+  return path.win32.normalize(s);
+}
+
+// UNC 主机根（\\host，无共享段）
+function isBareHost(p) {
+  return /^\\\\[^\\]+$/.test(p);
+}
+
+// 列出 UNC 主机上的可见共享（net view = Windows 共享枚举；隐藏共享 $ 不列出）
+async function listShares(hostPath) {
+  let stdout = '';
+  let killed = false;
+  let failed = false;
+  try {
+    const proc = Bun.spawn(['net', 'view', hostPath], { stdout: 'pipe', stderr: 'pipe' });
+    const killTimer = setTimeout(() => { killed = true; try { proc.kill(); } catch (e) {} }, 8000);
+    stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    clearTimeout(killTimer);
+  } catch (e) {
+    failed = true;
+  }
+  const lines = String(stdout).split(/\r?\n/);
+  const dash = lines.findIndex((l) => /^\s*-{3,}\s*$/.test(l));
+  const shares = [];
+  if (dash >= 0) {
+    for (let i = dash + 1; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (!t) continue;
+      if (/^(命令|The command|发生系统错误|System error)/.test(t)) break;
+      const m = t.match(/^(\S+)/);
+      if (m) shares.push(m[1]);
+    }
+    return shares;
+  }
+  // 无表体：空列表原样返回；超时/系统错误报出来
+  const joined = lines.join(' ').trim();
+  if (failed || killed || /发生系统错误|System error|找不到网络路径|network path/i.test(joined)) {
+    throw new Error('无法列出主机共享: ' + joined.slice(0, 120));
+  }
+  return shares;
+}
+
 function resolveAllowedPath(pathStr, cfg) {
   const s = String(pathStr || '');
   if (!s) throw new Error('path required');
   if (/[\x00-\x1f]/.test(s)) throw new Error('invalid characters');
   let norm;
-  try { norm = path.win32.normalize(s); }
+  try { norm = normalizeAbs(s); }
   catch (e) { throw new Error('invalid path'); }
   if (!norm.startsWith('\\\\') && !/^[A-Za-z]:\\/.test(norm)) {
     throw new Error('must be absolute path');
@@ -618,6 +677,16 @@ async function desktopInfo(res, cfg) {
 
 async function listDir(res, q, cfg) {
   const dir = resolveAllowedPath(q.path, cfg);
+  // UNC 主机根（\\host）不能用 readdir 列目录——Windows 共享枚举是另一套 API，
+  // 用 net view 列出主机上的可见共享，以目录形式呈现（2026-11-13）
+  if (isBareHost(dir)) {
+    const names = await listShares(dir);
+    const items = names.map((n) => ({
+      name: n, path: dir + '\\' + n, type: 'dir', size: 0, mtime: 0, ext: ''
+    }));
+    sendJson(res, 200, { ok: true, path: dir, items });
+    return;
+  }
   const st = await fs.promises.stat(dir);
   if (!st.isDirectory()) throw new Error('not a directory');
 
@@ -2143,7 +2212,7 @@ async function resolveTarget(q, cfg) {
   if (!abs) throw new Error('path required');
   if (/[\x00-\x1f]/.test(abs)) throw new Error('invalid characters');
   let norm;
-  try { norm = path.win32.normalize(abs); } catch (e) { throw new Error('invalid path'); }
+  try { norm = normalizeAbs(abs); } catch (e) { throw new Error('invalid path'); }
   if (!norm.startsWith('\\\\') && !/^[A-Za-z]:\\/.test(norm)) {
     throw new Error('must be absolute path');
   }
