@@ -303,7 +303,7 @@ body {
       <button class="btn" id="btn-group" title="按类型分组显示" data-i18n-title="按类型分组显示" data-i18n="分组">分组</button>
       <button class="btn" id="btn-new" title="新建（文件夹 / 文件类型）" data-i18n-title="新建（文件夹 / 文件类型）" data-i18n="新建 ▾">新建 ▾</button>
       <button class="btn primary" id="btn-upload" title="上传文件 (Ctrl+U)" data-i18n-title="上传文件 (Ctrl+U)" data-i18n="上传">上传</button>
-      <select class="search" id="lang-switch" title="语言 / Language" style="max-width:92px"><option value="zh">简体</option><option value="en">English</option></select>
+      <select class="search" id="lang-switch" title="语言 / Language" style="max-width:92px"><option value="zh">中文简体</option><option value="en">English</option></select>
     </header>
     <div class="file-list grid-view" id="file-list"></div>
     <footer class="statusbar">
@@ -721,8 +721,9 @@ body {
 
     // 1) 当前路径链（祖先 → 当前）
     if (p === '*') {
-      // "所有位置"模式：显示磁盘/根
+      // "所有位置"模式：显示磁盘/根（跳过 '*' 通配根本身——它已是 level-0 的"所有位置"节点）
       state.roots.forEach(function (root) {
+        if (root.path === '*') return;
         nodes.push({ name: root.display || root.path, path: root.path, source: root.source, level: 1, isCurrent: false });
       });
     } else {
