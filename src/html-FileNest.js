@@ -517,7 +517,7 @@ function listDrives(res) {
     .catch(() => sendJson(res, 200, { ok: true, drives, net: [] }));
 }
 
-// —— 网络共享盘：映射网络驱动器 + 连接过的 UNC 共享 + 活跃 SMB 连接 + 本机对外共享 ——
+// —— 网络共享盘：映射网络驱动器 + 连接过的 UNC 共享 + 活跃 SMB 连接（用户机器上的远程共享） ——
 let netCache = null, netCacheAt = 0;
 async function listNetShares() {
   const now = Date.now();
@@ -534,8 +534,6 @@ async function listNetShares() {
     '$mp=[Microsoft.Win32.Registry]::Users.OpenSubKey($s + \"\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\"); ' +
     'if ($mp) { foreach ($n in $mp.GetSubKeyNames()) { if ($n.StartsWith(\"##\") -and -not $n.StartsWith(\"###\")) { ' +
     '$out += [PSCustomObject]@{ path=(\"\\\\\" + $n.Substring(2).Replace(\"#\",\"\\\")); letter=$null } } }; $mp.Close() } }; ' +
-    'foreach ($sh in @(Get-SmbShare -ErrorAction SilentlyContinue)) { if ($sh.Name -notmatch \"\\$$\") { ' +
-    '$out += [PSCustomObject]@{ path=(\"\\\\\" + $env:COMPUTERNAME + \"\\\" + $sh.Name); letter=$null } } }; ' +
     '($out | Sort-Object path -Unique) | ConvertTo-Json -Compress';
   const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
     { stdout: 'pipe', stderr: 'ignore' });
