@@ -290,7 +290,7 @@ body {
       <button class="icon-btn" id="btn-fwd" title="前进 (Alt+→)" data-i18n-title="前进 (Alt+→)">→</button>
       <button class="icon-btn" id="btn-up" title="上一级 (Backspace)" data-i18n-title="上一级 (Backspace)">↑</button>
       <button class="icon-btn" id="btn-refresh" title="刷新 (F5)" data-i18n-title="刷新 (F5)">⟳</button>
-      <input class="search" id="search" placeholder="搜索整个当前树（文件名）…" data-i18n-ph="搜索整个当前树（文件名）…" style="flex:1;min-width:120px;max-width:400px">
+      <input class="search" id="search" placeholder="输入文件名，回车搜索…" data-i18n-ph="输入文件名，回车搜索…" style="flex:1;min-width:120px;max-width:400px">
       <button class="btn" id="btn-goto" title="跳转到路径" data-i18n-title="跳转到路径" data-i18n="跳到">跳到</button>
       <button class="btn" id="btn-toggle-view" title="切换视图" data-i18n-title="切换视图">▦</button>
       <select class="search" id="sort-select" title="排序方式" data-i18n-title="排序方式">
@@ -353,7 +353,7 @@ body {
     "前进 (Alt+→)": "Forward (Alt+→)",
     "上一级 (Backspace)": "Up one level (Backspace)",
     "刷新 (F5)": "Refresh (F5)",
-    "搜索整个当前树（文件名）…": "Search the whole tree (file names)…",
+    "输入文件名，回车搜索…": "Type a file name, press Enter…",
     "跳转到路径": "Go to path",
     "跳到": "Go",
     "切换视图": "Toggle view",
@@ -2398,10 +2398,7 @@ body {
       if (state.current && state.current.path === '*search*' && state.searchRoot) navTo(state.searchRoot, false);
       return;
     }
-    searchTimer = setTimeout(function () {
-      var root = currentSearchRoot();
-      if (root) searchPhase1(q, root);
-    }, 400);
+    // 打字不触发搜索（杨总：太敏感，输入一半就开始搜）；一律回车触发
   };
   $('search').addEventListener('keydown', function (e) {
     if (e.key !== 'Enter') return;
