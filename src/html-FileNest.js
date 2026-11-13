@@ -493,6 +493,34 @@ function isBareHost(p) {
   return /^\\\\[^\\]+$/.test(p);
 }
 
+// 控制台输出解码：net view 等系统命令按 OEM 代码页输出（中文 Windows = GBK），
+// 直接当 UTF-8 解码会乱码（2026-11-13 修：共享名乱码导致子目录打不开）
+function oemLabel() {
+  try {
+    const { dlopen, FFIType } = require('bun:ffi');
+    const k32 = dlopen('kernel32.dll', { GetOEMCP: { returns: FFIType.u32, args: [] } });
+    const cp = k32.symbols.GetOEMCP();
+    const map = {
+      936: 'gbk', 950: 'big5', 932: 'shift_jis', 949: 'euc-kr',
+      1252: 'windows-1252', 437: 'windows-1252', 850: 'windows-1252', 65001: 'utf-8'
+    };
+    return map[cp] || 'gbk';
+  } catch (e) {
+    return 'gbk';
+  }
+}
+
+function decodeConsole(buf) {
+  // 纯 ASCII 直接解；非 ASCII 按 OEM 代码页解（GBK/Big5/Shift_JIS 均与 ASCII 兼容）
+  let ascii = true;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] >= 0x80) { ascii = false; break; }
+  }
+  if (ascii) return buf.toString('latin1');
+  try { return new TextDecoder(oemLabel()).decode(buf); }
+  catch (e) { return new TextDecoder('gbk').decode(buf); }
+}
+
 // 列出 UNC 主机上的可见共享（net view = Windows 共享枚举；隐藏共享 $ 不列出）
 async function listShares(hostPath) {
   let stdout = '';
@@ -501,7 +529,7 @@ async function listShares(hostPath) {
   try {
     const proc = Bun.spawn(['net', 'view', hostPath], { stdout: 'pipe', stderr: 'pipe' });
     const killTimer = setTimeout(() => { killed = true; try { proc.kill(); } catch (e) {} }, 8000);
-    stdout = await new Response(proc.stdout).text();
+    stdout = decodeConsole(Buffer.from(await new Response(proc.stdout).arrayBuffer()));
     await proc.exited;
     clearTimeout(killTimer);
   } catch (e) {
