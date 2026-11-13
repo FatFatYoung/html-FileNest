@@ -165,6 +165,8 @@ body {
 /* 工具栏排序/分组控件 */
 .toolbar select.search { width: 112px; cursor: pointer; }
 .btn.toggled { background: rgba(31,111,235,0.2); border-color: var(--accent); color: var(--accent-2); }
+  .statusbar a { color: var(--text-2); text-decoration: none; }
+  .statusbar a:hover { color: var(--accent-2); text-decoration: underline; }
 .statusbar {
   padding: 6px 16px; border-top: 1px solid var(--border);
   color: var(--text-2); font-size: 12px;
@@ -309,7 +311,7 @@ body {
     <footer class="statusbar">
       <span id="status-count"></span>
       <span id="status-selection"></span>
-      <span id="status-path" style="margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:50%"></span>
+      <span style="margin-left:auto;white-space:nowrap"><a href="https://github.com/FatFatYoung" target="_blank" rel="noopener noreferrer" title="https://github.com/FatFatYoung">© FatFatYoung</a></span>
     </footer>
   </main>
   <aside class="preview" id="preview">
@@ -1436,8 +1438,6 @@ body {
     $('status-selection').textContent = state.multi.length > 1
       ? tr('已选择 {n} 项', { n: state.multi.length })
       : (state.selected ? tr('已选择: {n}', { n: state.selected.name }) : '');
-    $('status-path').textContent = state.current ? state.current.path : '';
-    $('status-path').title = state.current ? state.current.path : '';
   }
   function render() {
     renderBreadcrumb();
