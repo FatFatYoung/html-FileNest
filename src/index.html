@@ -290,7 +290,7 @@ body {
       <button class="icon-btn" id="btn-fwd" title="前进 (Alt+→)" data-i18n-title="前进 (Alt+→)">→</button>
       <button class="icon-btn" id="btn-up" title="上一级 (Backspace)" data-i18n-title="上一级 (Backspace)">↑</button>
       <button class="icon-btn" id="btn-refresh" title="刷新 (F5)" data-i18n-title="刷新 (F5)">⟳</button>
-      <input class="search" id="search" placeholder="搜索文件名…" data-i18n-ph="搜索文件名…" style="flex:1;min-width:120px;max-width:400px">
+      <input class="search" id="search" placeholder="搜索整个当前树（文件名）…" data-i18n-ph="搜索整个当前树（文件名）…" style="flex:1;min-width:120px;max-width:400px">
       <button class="btn" id="btn-goto" title="跳转到路径" data-i18n-title="跳转到路径" data-i18n="跳到">跳到</button>
       <button class="btn" id="btn-toggle-view" title="切换视图" data-i18n-title="切换视图">▦</button>
       <select class="search" id="sort-select" title="排序方式" data-i18n-title="排序方式">
@@ -353,7 +353,7 @@ body {
     "前进 (Alt+→)": "Forward (Alt+→)",
     "上一级 (Backspace)": "Up one level (Backspace)",
     "刷新 (F5)": "Refresh (F5)",
-    "搜索文件名…": "Search file names…",
+    "搜索整个当前树（文件名）…": "Search the whole tree (file names)…",
     "跳转到路径": "Go to path",
     "跳到": "Go",
     "切换视图": "Toggle view",
@@ -1003,6 +1003,23 @@ body {
     listEl.innerHTML = '';
     listEl.className = 'file-list ' + (state.viewMode === 'grid' ? 'grid-view' : 'list-view');
     var items = sortItems(filteredItems());
+    // —— 压缩包浏览视图：顶部常驻"解压到当前文件夹"按钮，一步到位 ——
+    var pCur = (state.current && state.current.path) || '';
+    var zSep = pCur.indexOf('::');
+    if (zSep > 0) {
+      var zipPath = pCur.substring(0, zSep);
+      var bar = document.createElement('div');
+      bar.className = 'group-title';
+      bar.style.cssText = 'grid-column:1/-1;width:100%;cursor:pointer;';
+      bar.textContent = '📦 ' + tr('解压到当前文件夹');
+      bar.title = tr('解压到当前文件夹');
+      bar.onclick = function () {
+        extractAll({ path: zipPath }, function () {
+          navTo({ path: parentPath(zipPath), source: state.current.source }, true);
+        });
+      };
+      listEl.appendChild(bar);
+    }
     if (!items.length) {
       var empty = document.createElement('div');
       empty.className = 'empty';
@@ -1183,12 +1200,12 @@ body {
       });
     });
   }
-  function extractAll(item) {
+  function extractAll(item, after) {
     showToast(tr('解压中…'));
     apiPost('/api/extract-all', { path: item.path })
       .then(function (r) {
         showToast(tr('解压完成：新文件 {w} 个', { w: r.written }) + (r.skipped ? tr('，跳过已存在 {s} 个', { s: r.skipped }) : ''));
-        reload();
+        if (after) { after(); } else { reload(); }
       })
       .catch(function (e) { showToast(tr('解压失败: ') + e.message, 'error'); });
   }
@@ -2336,20 +2353,36 @@ body {
     a.download = item.name;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
+  // —— 递归搜索：打字即搜整个当前树（按文件名），找文件不用一层层翻 ——
+  function currentSearchRoot() {
+    var cur = state.current;
+    if (!cur || !cur.path) return null;
+    if (cur.path.indexOf('*') === 0) return state.searchRoot || null;
+    var zs = cur.path.indexOf('::');
+    if (zs > 0) return { path: parentPath(cur.path.substring(0, zs)), source: cur.source };
+    return { path: cur.path, source: cur.source };
+  }
+  var searchTimer = null;
   $('search').oninput = function (e) {
-    state.filter = e.target.value.trim();
-    renderList();
+    var q = e.target.value.trim();
+    state.filter = '';
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+    if (!q) {
+      if (state.current && state.current.path === '*search*' && state.searchRoot) navTo(state.searchRoot, false);
+      return;
+    }
+    searchTimer = setTimeout(function () {
+      var root = currentSearchRoot();
+      if (root) runSearch(q, root);
+    }, 400);
   };
-  // —— 递归搜索：搜索框回车触发（在当前文件夹内递归匹配文件名） ——
   $('search').addEventListener('keydown', function (e) {
     if (e.key !== 'Enter') return;
     var q = e.target.value.trim();
     if (!q) return;
-    if (state.current && state.current.path.indexOf('*') === 0) {
-      if (state.searchRoot) runSearch(q, state.searchRoot);
-      return;
-    }
-    if (state.current) runSearch(q, { path: state.current.path, source: state.current.source });
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+    var root = currentSearchRoot();
+    if (root) runSearch(q, root);
   });
 
   // —— 鼠标框选多选（橡皮筋选择） ——
