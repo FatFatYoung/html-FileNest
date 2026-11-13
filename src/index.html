@@ -304,6 +304,7 @@ body {
     <div class="preview-resizer" id="preview-resizer"></div>
     <header class="preview-header">
       <span class="title" id="preview-title"></span>
+      <button class="icon-btn" id="preview-fav" title="收藏到首页">☆</button>
       <button class="icon-btn" id="preview-open" title="用系统程序打开">📂</button>
       <button class="icon-btn" id="preview-download" title="下载">⬇</button>
       <button class="icon-btn" id="preview-delete" title="删除">🗑</button>
@@ -334,6 +335,7 @@ body {
     items: [],
     selected: null,
     previewItem: null,
+    favorites: [],
     history: [],
     historyIdx: -1,
     viewMode: 'grid',
@@ -495,8 +497,9 @@ body {
     var nodes = [];
     var p = state.current.path;
 
-    // 0) 根节点：所有位置
+    // 0) 根节点：所有位置 + 我的收藏
     nodes.push({ name: '所有位置', path: '*', level: 0, isCurrent: p === '*', isRoot: true });
+    nodes.push({ name: '我的收藏', path: '*fav*', level: 0, isCurrent: p === '*fav*', isRoot: true, icon: '📁' });
 
     // 1) 当前路径链（祖先 → 当前）
     if (p === '*') {
@@ -550,7 +553,7 @@ body {
 
       var ico = document.createElement('span');
       ico.className = 'tree-icon';
-      ico.textContent = node.isRoot ? '🏠' : (node.level === 0 && !node.isChild ? '💻' : '📁');
+      ico.textContent = node.icon || (node.isRoot ? '🏠' : (node.level === 0 && !node.isChild ? '💻' : '📁'));
       div.appendChild(ico);
 
       var name = document.createElement('span');
@@ -573,6 +576,12 @@ body {
       var s0 = document.createElement('span');
       s0.textContent = '所有位置';
       breadcrumbEl.appendChild(s0);
+      return;
+    }
+    if (state.current.path === '*fav*') {
+      var sf = document.createElement('span');
+      sf.textContent = '我的收藏';
+      breadcrumbEl.appendChild(sf);
       return;
     }
     var p = state.current.path;
@@ -718,6 +727,44 @@ body {
     });
   }
 
+  // —— 我的收藏 ——
+  function isFav(p) {
+    return state.favorites.some(function (f) { return f.path === p; });
+  }
+  function favItems() {
+    return state.favorites.map(function (f) {
+      var ext = (f.name.match(/\.([^.]+)$/) || [])[1] || '';
+      return { name: f.name, path: f.path, type: f.type === 'dir' ? 'dir' : 'file', size: 0, mtime: f.addedAt || 0, ext: ext.toLowerCase(), _fav: true };
+    });
+  }
+  function loadFavorites() {
+    return apiGet('/api/favorites').then(function (r) {
+      state.favorites = r.favorites || [];
+      if (state.current && (state.current.path === '*' || state.current.path === '*fav*')) render();
+    }).catch(function () {});
+  }
+  function toggleFavorite(item) {
+    var done = function (r) {
+      state.favorites = r.favorites || [];
+      updatePreviewFavBtn();
+      render();
+    };
+    if (isFav(item.path)) {
+      apiPost('/api/unfavorite', { path: item.path }).then(done)
+        .catch(function (e) { showToast('操作失败: ' + e.message, 'error'); });
+    } else {
+      apiPost('/api/favorites', { path: item.path, type: item.type }).then(done)
+        .catch(function (e) { showToast('操作失败: ' + e.message, 'error'); });
+    }
+  }
+  function showFavorites() {
+    loadFavorites();
+    state.current = { path: '*fav*', source: 'default' };
+    state.items = favItems();
+    state.selected = null;
+    render();
+  }
+
   function renderList() {
     listEl.innerHTML = '';
     listEl.className = 'file-list ' + (state.viewMode === 'grid' ? 'grid-view' : 'list-view');
@@ -743,6 +790,24 @@ body {
       });
     } else {
       items.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+    }
+    // —— 我的收藏模块（所有位置页，正常盘符下另起一行的新模块） ——
+    if (state.current && state.current.path === '*') {
+      var favs = favItems();
+      var fh = document.createElement('div');
+      fh.className = 'group-title';
+      fh.style.cssText = 'grid-column:1/-1;width:100%;margin-top:12px;';
+      fh.textContent = '我的收藏（' + favs.length + '）';
+      listEl.appendChild(fh);
+      if (favs.length) {
+        favs.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+      } else {
+        var tip = document.createElement('div');
+        tip.className = 'empty';
+        tip.style.cssText = 'grid-column:1/-1;width:100%;';
+        tip.textContent = '右键文件/文件夹 → 收藏到首页';
+        listEl.appendChild(tip);
+      }
     }
   }
   function makeItemEl(item) {
@@ -804,6 +869,7 @@ body {
   function navTo(target, pushHistory) {
     if (pushHistory === undefined) pushHistory = true;
     if (target.path === '*') return showDrives();
+    if (target.path === '*fav*') return showFavorites();
     // —— ZIP 虚拟路径（path.zip::subdir）——
     var zipSep = target.path.indexOf('::');
     if (zipSep > 0) {
@@ -866,7 +932,7 @@ body {
     navTo(state.history[state.historyIdx], false);
   }
   function navUp() {
-    if (!state.current || state.current.path === '*') return;
+    if (!state.current || state.current.path === '*' || state.current.path === '*fav*') return;
     var curPath = state.current.path;
     var zipSep = curPath.indexOf('::');
     if (zipSep > 0) {
@@ -1146,6 +1212,7 @@ body {
   function previewFile(item) {
     revokeObjectUrls();   // 审查 #13：切换预览先回收上次创建的 Blob URL
     state.previewItem = item;
+    updatePreviewFavBtn();
     previewTitleEl.textContent = item.name;
     previewBodyEl.innerHTML = '';
     previewEl.classList.add('open');
@@ -1318,6 +1385,8 @@ body {
             .catch(function (e) { showToast('定位失败: ' + e.message, 'error'); });
         });
         sep();
+        add(isFav(item.path) ? '取消收藏' : '收藏到首页', '⭐', function () { toggleFavorite(item); });
+        sep();
         add('复制到…', '🔁', function () { doCopy(item); });
         add('移动到…', '✂️', function () { doMove(item); });
         sep();
@@ -1356,7 +1425,7 @@ body {
   function hideContextMenu() { contextMenuEl.classList.remove('show'); }
 
   function doMkdir() {
-    if (!state.current || state.current.path === '*') {
+    if (!state.current || state.current.path === '*' || state.current.path === '*fav*') {
       showToast('请先打开一个文件夹', 'error'); return;
     }
     openModal('新建文件夹', '新建文件夹').then(function (name) {
@@ -1367,7 +1436,7 @@ body {
     });
   }
   function doMkfile(t) {
-    if (!state.current || state.current.path === '*') {
+    if (!state.current || state.current.path === '*' || state.current.path === '*fav*') {
       showToast('请先打开一个文件夹', 'error'); return;
     }
     openModal('新建' + t.name, '新建' + t.name + t.ext).then(function (name) {
@@ -1501,7 +1570,7 @@ body {
       });
   }
   function uploadFiles(files) {
-    if (!state.current || state.current.path === '*') {
+    if (!state.current || state.current.path === '*' || state.current.path === '*fav*') {
       showToast('请先打开一个文件夹', 'error'); return;
     }
     var dir = state.current.path;
@@ -1621,6 +1690,16 @@ body {
     var item = state.previewItem;
     if (item) doDelete(item);
   };
+  function updatePreviewFavBtn() {
+    var btn = $('preview-fav');
+    if (!btn || !state.previewItem) return;
+    var fav = isFav(state.previewItem.path);
+    btn.textContent = fav ? '⭐' : '☆';
+    btn.title = fav ? '取消收藏' : '收藏到首页';
+  }
+  $('preview-fav').onclick = function () {
+    if (state.previewItem) toggleFavorite(state.previewItem);
+  };
   $('preview-download').onclick = function () {
     var item = state.previewItem;
     if (!item) return;
@@ -1689,6 +1768,7 @@ body {
   });
 
   function init() {
+    loadFavorites();
     apiGet('/api/roots').then(function (r) {
       state.roots = r.roots || [];
       renderRoots();

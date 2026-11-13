@@ -411,6 +411,7 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/desktop') return await desktopInfo(res, cfg);
       if (p === '/api/ls')     return await listDir(res, q, cfg);
       if (p === '/api/newfile-types') return await newfileTypesOp(res);
+      if (p === '/api/favorites') return await favoritesListOp(res);
       if (p === '/api/stat')   return await statPath(res, q, cfg);
       if (p === '/api/raw')    return await streamFile(req, res, q, cfg);
       if (p === '/api/read')   return await readTextFile(res, q, cfg);
@@ -427,6 +428,8 @@ async function handleApi(req, res, p, q, cfg) {
       const data = body ? JSON.parse(body) : {};
       if (p === '/api/mkdir')  return await mkdirOp(res, data, cfg);
       if (p === '/api/mkfile') return await mkfileOp(res, data, cfg);
+      if (p === '/api/favorites') return await favoritesAddOp(res, data, cfg);
+      if (p === '/api/unfavorite') return await unfavoriteOp(res, data);
       if (p === '/api/rename') return await renameOp(res, data, cfg);
       if (p === '/api/rm')     return await rmOp(res, data, cfg);
       if (p === '/api/mv')     return await mvOp(res, data, cfg);
@@ -1509,6 +1512,33 @@ async function queryShellNewTypes() {
 async function newfileTypesOp(res) {
   if (!newFileTypesCache) newFileTypesCache = await queryShellNewTypes();
   sendJson(res, 200, { ok: true, types: newFileTypesCache });
+}
+
+// —— 我的收藏（持久化到安装目录 favorites.json） ——
+function favoritesFile() { return path.join(INSTALL_DIR, 'favorites.json'); }
+function loadFavorites() {
+  try { return JSON.parse(fs.readFileSync(favoritesFile(), 'utf8')) || []; } catch { return []; }
+}
+function saveFavorites(list) {
+  fs.writeFileSync(favoritesFile(), JSON.stringify(list, null, 2));
+}
+async function favoritesListOp(res) {
+  sendJson(res, 200, { ok: true, favorites: loadFavorites() });
+}
+async function favoritesAddOp(res, data, cfg) {
+  const p = resolveAllowedPath(data.path, cfg);
+  const list = loadFavorites();
+  if (!list.some(f => f.path === p)) {
+    list.unshift({ path: p, name: path.win32.basename(p) || p, type: data.type === 'dir' ? 'dir' : 'file', addedAt: Date.now() });
+    saveFavorites(list);
+  }
+  sendJson(res, 200, { ok: true, favorites: list });
+}
+async function unfavoriteOp(res, data) {
+  const raw = String(data.path || '');
+  const list = loadFavorites().filter(f => f.path !== raw);
+  saveFavorites(list);
+  sendJson(res, 200, { ok: true, favorites: list });
 }
 
 async function renameOp(res, data, cfg) {
