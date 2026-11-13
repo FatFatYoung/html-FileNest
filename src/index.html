@@ -247,7 +247,7 @@ body {
 .context-menu .item.danger { color: var(--danger); }
 .context-menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
 .app.dragover::after {
-  content: '松开鼠标上传文件';
+  content: var(--drag-tip, '松开鼠标上传文件');
   position: fixed; inset: 0;
   background: rgba(31,111,235,0.15);
   border: 3px dashed var(--accent);
@@ -279,30 +279,31 @@ body {
   <aside class="sidebar">
     <div class="logo"><span class="dot"></span>html-FileNest</div>
     <div class="list" id="tree-container">
-      <div class="section-title">目录树</div>
+      <div class="section-title" data-i18n="目录树">目录树</div>
       <div id="tree"></div>
     </div>
   </aside>
   <main class="main">
     <header class="toolbar">
-      <button class="icon-btn" id="btn-sidebar" title="收起/展开侧栏 (Ctrl+B)">◧</button>
-      <button class="icon-btn" id="btn-back" title="后退 (Alt+←)">←</button>
-      <button class="icon-btn" id="btn-fwd" title="前进 (Alt+→)">→</button>
-      <button class="icon-btn" id="btn-up" title="上一级 (Backspace)">↑</button>
-      <button class="icon-btn" id="btn-refresh" title="刷新 (F5)">⟳</button>
-      <input class="search" id="search" placeholder="搜索文件名…" style="flex:1;min-width:120px;max-width:400px">
-      <button class="btn" id="btn-goto" title="跳转到路径">跳到</button>
-      <button class="btn" id="btn-toggle-view" title="切换视图">▦</button>
-      <select class="search" id="sort-select" title="排序方式">
-        <option value="name">按名称</option>
-        <option value="size">按大小</option>
-        <option value="mtime">按修改时间</option>
-        <option value="type">按类型</option>
+      <button class="icon-btn" id="btn-sidebar" title="收起/展开侧栏 (Ctrl+B)" data-i18n-title="收起/展开侧栏 (Ctrl+B)">◧</button>
+      <button class="icon-btn" id="btn-back" title="后退 (Alt+←)" data-i18n-title="后退 (Alt+←)">←</button>
+      <button class="icon-btn" id="btn-fwd" title="前进 (Alt+→)" data-i18n-title="前进 (Alt+→)">→</button>
+      <button class="icon-btn" id="btn-up" title="上一级 (Backspace)" data-i18n-title="上一级 (Backspace)">↑</button>
+      <button class="icon-btn" id="btn-refresh" title="刷新 (F5)" data-i18n-title="刷新 (F5)">⟳</button>
+      <input class="search" id="search" placeholder="搜索文件名…" data-i18n-ph="搜索文件名…" style="flex:1;min-width:120px;max-width:400px">
+      <button class="btn" id="btn-goto" title="跳转到路径" data-i18n-title="跳转到路径" data-i18n="跳到">跳到</button>
+      <button class="btn" id="btn-toggle-view" title="切换视图" data-i18n-title="切换视图">▦</button>
+      <select class="search" id="sort-select" title="排序方式" data-i18n-title="排序方式">
+        <option value="name" data-i18n="按名称">按名称</option>
+        <option value="size" data-i18n="按大小">按大小</option>
+        <option value="mtime" data-i18n="按修改时间">按修改时间</option>
+        <option value="type" data-i18n="按类型">按类型</option>
       </select>
-      <button class="btn" id="btn-sort-dir" title="升序 / 降序切换">↑ 升序</button>
-      <button class="btn" id="btn-group" title="按类型分组显示">分组</button>
-      <button class="btn" id="btn-new" title="新建（文件夹 / 文件类型）">新建 ▾</button>
-      <button class="btn primary" id="btn-upload" title="上传文件 (Ctrl+U)">上传</button>
+      <button class="btn" id="btn-sort-dir" title="升序 / 降序切换" data-i18n-title="升序 / 降序切换">↑ 升序</button>
+      <button class="btn" id="btn-group" title="按类型分组显示" data-i18n-title="按类型分组显示" data-i18n="分组">分组</button>
+      <button class="btn" id="btn-new" title="新建（文件夹 / 文件类型）" data-i18n-title="新建（文件夹 / 文件类型）" data-i18n="新建 ▾">新建 ▾</button>
+      <button class="btn primary" id="btn-upload" title="上传文件 (Ctrl+U)" data-i18n-title="上传文件 (Ctrl+U)" data-i18n="上传">上传</button>
+      <select class="search" id="lang-switch" title="语言 / Language" style="max-width:92px"><option value="zh">简体</option><option value="en">English</option></select>
     </header>
     <div class="file-list grid-view" id="file-list"></div>
     <footer class="statusbar">
@@ -315,11 +316,11 @@ body {
     <div class="preview-resizer" id="preview-resizer"></div>
     <header class="preview-header">
       <span class="title" id="preview-title"></span>
-      <button class="icon-btn" id="preview-fav" title="收藏到首页">☆</button>
-      <button class="icon-btn" id="preview-open" title="用系统程序打开">🚀</button>
-      <button class="icon-btn" id="preview-download" title="下载">⬇</button>
-      <button class="icon-btn" id="preview-delete" title="删除">🗑️</button>
-      <button class="icon-btn" id="preview-close" title="关闭">✕</button>
+      <button class="icon-btn" id="preview-fav" title="收藏到首页" data-i18n-title="收藏到首页">☆</button>
+      <button class="icon-btn" id="preview-open" title="用系统程序打开" data-i18n-title="用系统程序打开">🚀</button>
+      <button class="icon-btn" id="preview-download" title="下载" data-i18n-title="下载">⬇</button>
+      <button class="icon-btn" id="preview-delete" title="删除" data-i18n-title="删除">🗑️</button>
+      <button class="icon-btn" id="preview-close" title="关闭" data-i18n-title="关闭">✕</button>
     </header>
     <div class="preview-body" id="preview-body"></div>
   </aside>
@@ -330,8 +331,8 @@ body {
     <div class="modal-title" id="modal-title"></div>
     <input class="modal-input" id="modal-input">
     <div class="modal-actions">
-      <button class="btn" id="modal-cancel">取消</button>
-      <button class="btn primary" id="modal-ok">确定</button>
+      <button class="btn" id="modal-cancel" data-i18n="取消">取消</button>
+      <button class="btn primary" id="modal-ok" data-i18n="确定">确定</button>
     </div>
   </div>
 </div>
@@ -340,6 +341,207 @@ body {
 <script>
 (function () {
   'use strict';
+  // ==== i18n: 简体 / English 切换（偏好持久化 localStorage.fn_lang） ====
+  var LANG = 'zh';
+  try { LANG = localStorage.getItem('fn_lang') === 'en' ? 'en' : 'zh'; } catch (e) {}
+  var I18N_EN = {
+    "html-FileNest · 本地文件管理器": "html-FileNest · Local File Manager",
+    "松开鼠标上传文件": "Drop to upload files",
+    "目录树": "Directory Tree",
+    "收起/展开侧栏 (Ctrl+B)": "Toggle sidebar (Ctrl+B)",
+    "后退 (Alt+←)": "Back (Alt+←)",
+    "前进 (Alt+→)": "Forward (Alt+→)",
+    "上一级 (Backspace)": "Up one level (Backspace)",
+    "刷新 (F5)": "Refresh (F5)",
+    "搜索文件名…": "Search file names…",
+    "跳转到路径": "Go to path",
+    "跳到": "Go",
+    "切换视图": "Toggle view",
+    "排序方式": "Sort by",
+    "按名称": "Name",
+    "按大小": "Size",
+    "按修改时间": "Modified time",
+    "按类型": "Type",
+    "升序 / 降序切换": "Toggle ascending / descending",
+    "↑ 升序": "↑ Ascending",
+    "↓ 降序": "↓ Descending",
+    "按类型分组显示": "Group by type",
+    "分组": "Group",
+    "新建（文件夹 / 文件类型）": "New (folder / file type)",
+    "新建 ▾": "New ▾",
+    "上传文件 (Ctrl+U)": "Upload files (Ctrl+U)",
+    "上传": "Upload",
+    "收藏到首页": "Add to Favorites",
+    "取消收藏": "Remove from Favorites",
+    "用系统程序打开": "Open with system app",
+    "下载": "Download",
+    "删除": "Delete",
+    "关闭": "Close",
+    "取消": "Cancel",
+    "确定": "OK",
+    "所有位置": "All Locations",
+    "我的收藏": "My Favorites",
+    "回收站": "Recycle Bin",
+    "桌面": "Desktop",
+    "搜索：\"{q}\"（范围 {r}）": "Search: \"{q}\" (scope {r})",
+    "我的收藏（{n}）": "My Favorites ({n})",
+    "右键文件/文件夹 → 收藏到首页": "Right-click a file/folder → Add to Favorites",
+    "点击展开 / 收起": "Click to expand / collapse",
+    "（{n}）": " ({n})",
+    "{n} 项 · {d} 个文件夹 · {f} 个文件": "{n} items · {d} folders · {f} files",
+    "已选择 {n} 项": "{n} selected",
+    "已选择: {n}": "Selected: {n}",
+    "没有匹配的文件": "No matching files",
+    "此文件夹为空": "This folder is empty",
+    "操作失败: ": "Operation failed: ",
+    "中… 共 {n} 项": "… {n} items",
+    "完成：成功 {a} 项，失败 {b} 项": " done: {a} ok, {b} failed",
+    "完成 {n} 项": " done: {n}",
+    "移入回收站": "Recycle",
+    "批量复制到…（填写目标文件夹完整路径）": "Batch copy to… (full target folder path)",
+    "复制": "Copy",
+    "批量移动到…（填写目标文件夹完整路径）": "Batch move to… (full target folder path)",
+    "移动": "Move",
+    "打包中… 共 {n} 项": "Packing… {n} items",
+    "打包下载完成": "Zip download complete",
+    "打包下载失败: ": "Zip download failed: ",
+    "批量重命名（{name}=原名 {n}=序号，扩展名保留）": "Batch rename ({name}=original name, {n}=index, extension kept)",
+    "没有需要重命名的项目": "Nothing to rename",
+    "重命名": "Rename",
+    "解压中…": "Extracting…",
+    "解压完成：新文件 {w} 个": "Extracted: {w} new files",
+    "，跳过已存在 {s} 个": ", {s} skipped (already exist)",
+    "解压失败: ": "Extract failed: ",
+    "名称": "Name",
+    "类型": "Type",
+    "文件夹": "Folder",
+    "文件": "File",
+    "位置": "Location",
+    "大小": "Size",
+    "{n} 个项目": "{n} items",
+    "创建时间": "Created",
+    "修改时间": "Modified",
+    "读取属性失败: ": "Failed to read properties: ",
+    "属性 — {title}": "Properties — {title}",
+    "已恢复到 {p}": "Restored to {p}",
+    "恢复失败: ": "Restore failed: ",
+    "确定彻底删除 \"{n}\" 吗？\n（不可恢复）": "Permanently delete \"{n}\"?\n(cannot be undone)",
+    "已彻底删除": "Permanently deleted",
+    "删除失败: ": "Delete failed: ",
+    "确定清空回收站吗？\n（所有暂存项目将被彻底删除，不可恢复）": "Empty the recycle bin?\n(all items will be permanently deleted, cannot be undone)",
+    "已清空回收站（{n} 项）": "Recycle bin emptied ({n} items)",
+    "清空失败: ": "Empty failed: ",
+    "确定将回收站全部项目恢复到原位置吗？": "Restore all recycled items to their original locations?",
+    "已恢复 {n} 项（{f} 项失败）": "Restored {n} items ({f} failed)",
+    "已恢复 {n} 项": "Restored {n} items",
+    "确定将 \"{n}\" 移入回收站吗？\n（可在回收站恢复）": "Move \"{n}\" to the recycle bin?\n(can be restored there)",
+    "确定将选中的 {n} 项移入回收站吗？\n（可在回收站恢复）": "Move the selected {n} items to the recycle bin?\n(can be restored there)",
+    "确定将选中的 {n} 项恢复到原位置吗？": "Restore the selected {n} items to their original locations?",
+    "确定彻底删除选中的 {n} 项吗？\n（不可恢复）": "Permanently delete the selected {n} items?\n(cannot be undone)",
+    "已彻底删除 {n} 项（{f} 项失败）": "Permanently deleted {n} items ({f} failed)",
+    "已彻底删除 {n} 项": "Permanently deleted {n} items",
+    "请先打开一个文件夹再搜索": "Open a folder first, then search",
+    "搜索中…": "Searching…",
+    "搜索完成（超过 500 条，只显示前 500 条）": "Search done (over 500 hits, showing first 500)",
+    "搜索完成，共 {n} 条": "Search done: {n} results",
+    "搜索失败: ": "Search failed: ",
+    "（原位置: {p}，删除于 {d}）": " (original: {p}, deleted {d})",
+    "打开失败: ": "Open failed: ",
+    "定位失败: ": "Reveal failed: ",
+    "未知错误": "Unknown error",
+    "已复制文件名": "Filename copied",
+    "无法加载图片": "Failed to load image",
+    "加载中...": "Loading...",
+    "预览安全组件缺失，请使用新版 index.html": "Preview security component missing; please use a newer index.html",
+    "PSD 缩略图预览（完整内容请用 Photoshop 打开）": "PSD thumbnail preview (open in Photoshop for full content)",
+    "PSD 复合图像预览（图层内容请用 Photoshop 打开）": "PSD composite preview (open in Photoshop for layer content)",
+    "无法读取: ": "Cannot read: ",
+    "压缩包内文件 · {s} · 点击下载按钮获取": "File in archive · {s} · use the download button",
+    "（此页无文本内容）": "(no text on this page)",
+    "无法预览: ": "Cannot preview: ",
+    "此文件类型不支持预览": "Preview is not supported for this file type",
+    "批量恢复到原位置": "Restore all to original locations",
+    "批量彻底删除": "Delete all permanently",
+    "预览": "Preview",
+    "恢复到原位置": "Restore to original location",
+    "彻底删除": "Delete permanently",
+    "打开": "Open",
+    "在资源管理器中显示": "Show in Explorer",
+    "属性": "Properties",
+    "打包下载": "Download as zip",
+    "批量重命名": "Batch rename",
+    "批量复制到…": "Batch copy to…",
+    "批量移动到…": "Batch move to…",
+    "批量删除（进回收站）": "Batch delete (to recycle bin)",
+    "复制文件名": "Copy filename",
+    "复制到…": "Copy to…",
+    "移动到…": "Move to…",
+    "重命名失败: ": "Rename failed: ",
+    "删除（进回收站）": "Delete (to recycle bin)",
+    "解压到当前文件夹": "Extract here",
+    "刷新": "Refresh",
+    "清空回收站": "Empty recycle bin",
+    "新建": "New",
+    "上传文件": "Upload files",
+    "请先打开一个文件夹": "Open a folder first",
+    "新建文件夹": "New folder",
+    "创建失败: ": "Create failed: ",
+    "类型加载中…": "Loading types…",
+    "复制到…（填写完整目标路径）": "Copy to… (full target path)",
+    "复制中…": "Copying…",
+    "复制完成": "Copy complete",
+    "复制失败: ": "Copy failed: ",
+    "移动到…（填写完整目标路径）": "Move to… (full target path)",
+    "移动中…": "Moving…",
+    "移动完成": "Move complete",
+    "移动失败: ": "Move failed: ",
+    "跳转到路径（绝对路径）": "Go to path (absolute)",
+    "上传中… 共 {n} 个文件": "Uploading… {n} files",
+    "上传完成: {ok} 成功": "Upload done: {ok} ok",
+    " / {f} 失败": " / {f} failed",
+    "展开侧栏 (Ctrl+B)": "Expand sidebar (Ctrl+B)",
+    "收起侧栏 (Ctrl+B)": "Collapse sidebar (Ctrl+B)",
+    "加载失败: ": "Load failed: "
+  };
+  var GROUP_NAMES_EN = {
+    "文件夹": "Folders",
+    "图片": "Images",
+    "压缩包": "Archives",
+    "无后缀": "No extension"
+  };
+  function tr(s, p) {
+    var out = (LANG === 'en' && I18N_EN[s] != null) ? I18N_EN[s] : s;
+    if (p) { for (var k in p) { out = out.split('{' + k + '}').join(String(p[k])); } }
+    return out;
+  }
+  function grpName(c) {
+    return (LANG === 'en' && GROUP_NAMES_EN[c] != null) ? GROUP_NAMES_EN[c] : c;
+  }
+  function applyI18n() {
+    document.title = tr('html-FileNest · 本地文件管理器');
+    document.documentElement.style.setProperty('--drag-tip', JSON.stringify(tr('松开鼠标上传文件')));
+    var els = document.querySelectorAll('[data-i18n]');
+    for (var i = 0; i < els.length; i++) els[i].textContent = tr(els[i].getAttribute('data-i18n'));
+    els = document.querySelectorAll('[data-i18n-title]');
+    for (var i = 0; i < els.length; i++) els[i].title = tr(els[i].getAttribute('data-i18n-title'));
+    els = document.querySelectorAll('[data-i18n-ph]');
+    for (var i = 0; i < els.length; i++) els[i].placeholder = tr(els[i].getAttribute('data-i18n-ph'));
+    var sd = document.getElementById('btn-sort-dir');
+    if (sd) sd.textContent = state.sortAsc ? tr('↑ 升序') : tr('↓ 降序');
+    var ls = document.getElementById('lang-switch');
+    if (ls) ls.value = LANG;
+  }
+  function setLang(l) {
+    LANG = (l === 'en') ? 'en' : 'zh';
+    try { localStorage.setItem('fn_lang', LANG); } catch (e) {}
+    applyI18n();
+    applySidebar(appEl.classList.contains('sidebar-collapsed'));
+    renderRoots();
+    renderBreadcrumb();
+    renderList();
+    renderStatus();
+  }
+
   var state = {
     roots: [],
     current: null,
@@ -513,9 +715,9 @@ body {
     var p = state.current.path;
 
     // 0) 根节点：所有位置 + 我的收藏
-    nodes.push({ name: '所有位置', path: '*', level: 0, isCurrent: p === '*', isRoot: true });
-    nodes.push({ name: '我的收藏', path: '*fav*', level: 0, isCurrent: p === '*fav*', isRoot: true, icon: '📁' });
-    nodes.push({ name: '回收站', path: '*recycle*', level: 0, isCurrent: p === '*recycle*', isRoot: true, icon: '🗑️' });
+    nodes.push({ name: tr('所有位置'), path: '*', level: 0, isCurrent: p === '*', isRoot: true });
+    nodes.push({ name: tr('我的收藏'), path: '*fav*', level: 0, isCurrent: p === '*fav*', isRoot: true, icon: '📁' });
+    nodes.push({ name: tr('回收站'), path: '*recycle*', level: 0, isCurrent: p === '*recycle*', isRoot: true, icon: '🗑️' });
 
     // 1) 当前路径链（祖先 → 当前）
     if (p === '*') {
@@ -594,25 +796,25 @@ body {
     if (!state.current) return;
     if (state.current.path === '*') {
       var s0 = document.createElement('span');
-      s0.textContent = '所有位置';
+      s0.textContent = tr('所有位置');
       breadcrumbEl.appendChild(s0);
       return;
     }
     if (state.current.path === '*fav*') {
       var sf = document.createElement('span');
-      sf.textContent = '我的收藏';
+      sf.textContent = tr('我的收藏');
       breadcrumbEl.appendChild(sf);
       return;
     }
     if (state.current.path === '*recycle*') {
       var sr = document.createElement('span');
-      sr.textContent = '回收站';
+      sr.textContent = tr('回收站');
       breadcrumbEl.appendChild(sr);
       return;
     }
     if (state.current.path === '*search*') {
       var ss = document.createElement('span');
-      ss.textContent = '搜索："' + state.searchQ + '"（范围 ' + (state.searchRoot ? state.searchRoot.path : '') + '）';
+      ss.textContent = tr('搜索："{q}"（范围 {r}）', { q: state.searchQ, r: (state.searchRoot ? state.searchRoot.path : '') });
       breadcrumbEl.appendChild(ss);
       return;
     }
@@ -737,7 +939,7 @@ body {
 
   // —— 桌面入口（所有位置页）：桌面文件夹入口与盘符并列 ——
   function desktopEntry() {
-    return { name: '桌面', path: state.desktop.path, type: 'dir', size: 0, mtime: 0, ext: '', _desktop: true, _entry: true };
+    return { name: tr('桌面'), path: state.desktop.path, type: 'dir', size: 0, mtime: 0, ext: '', _desktop: true, _entry: true };
   }
   function loadDesktop(force) {
     var d = state.desktop;
@@ -782,10 +984,10 @@ body {
     };
     if (isFav(item.path)) {
       apiPost('/api/unfavorite', { path: item.path }).then(done)
-        .catch(function (e) { showToast('操作失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('操作失败: ') + e.message, 'error'); });
     } else {
       apiPost('/api/favorites', { path: item.path, type: item.type }).then(done)
-        .catch(function (e) { showToast('操作失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('操作失败: ') + e.message, 'error'); });
     }
   }
   function showFavorites() {
@@ -804,7 +1006,7 @@ body {
       var empty = document.createElement('div');
       empty.className = 'empty';
       empty.innerHTML = '<span class="emoji">📂</span>' +
-        (state.filter ? '没有匹配的文件' : '此文件夹为空');
+        (state.filter ? tr('没有匹配的文件') : tr('此文件夹为空'));
       listEl.appendChild(empty);
       return;
     }
@@ -828,8 +1030,8 @@ body {
         var h = document.createElement('div');
         h.className = 'group-title';
         h.style.cursor = 'pointer';
-        h.title = '点击展开 / 收起';
-        h.textContent = (groupCollapsed[cat] ? '▸ ' : '▾ ') + cat + '（' + buckets[cat].length + '）';
+        h.title = tr('点击展开 / 收起');
+        h.textContent = (groupCollapsed[cat] ? '▸ ' : '▾ ') + grpName(cat) + tr('（{n}）', { n: buckets[cat].length });
         h.onclick = function () {
           groupCollapsed[cat] = !groupCollapsed[cat];
           renderList();
@@ -846,7 +1048,7 @@ body {
       var fh = document.createElement('div');
       fh.className = 'group-title';
       fh.style.cssText = 'grid-column:1/-1;width:100%;margin-top:12px;';
-      fh.textContent = '我的收藏（' + favs.length + '）';
+      fh.textContent = tr('我的收藏（{n}）', { n: favs.length });
       listEl.appendChild(fh);
       if (favs.length) {
         favs.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
@@ -854,7 +1056,7 @@ body {
         var tip = document.createElement('div');
         tip.className = 'empty';
         tip.style.cssText = 'grid-column:1/-1;width:100%;';
-        tip.textContent = '右键文件/文件夹 → 收藏到首页';
+        tip.textContent = tr('右键文件/文件夹 → 收藏到首页');
         listEl.appendChild(tip);
       }
     }
@@ -896,11 +1098,11 @@ body {
   // —— 批量操作 ——
   function runBatch(label, items, fn) {
     if (!items.length) return;
-    showToast(label + '中… 共 ' + items.length + ' 项');
+    showToast(label + tr('中… 共 {n} 项', { n: items.length }));
     var done = 0, fail = 0, idx = 0;
     function next() {
       if (idx >= items.length) {
-        showToast(fail ? (label + '完成：成功 ' + done + ' 项，失败 ' + fail + ' 项') : (label + '完成 ' + done + ' 项'), fail ? 'error' : 'success');
+        showToast(fail ? (label + tr('完成：成功 {a} 项，失败 {b} 项', { a: done, b: fail })) : (label + tr('完成 {n} 项', { n: done })), fail ? 'error' : 'success');
         clearSelection();
         reload();
         return;
@@ -916,37 +1118,37 @@ body {
   function deleteItems(items) {
     if (!items.length) return;
     var msg = items.length === 1
-      ? '确定将 "' + items[0].name + '" 移入回收站吗？\n（可在回收站恢复）'
-      : '确定将选中的 ' + items.length + ' 项移入回收站吗？\n（可在回收站恢复）';
+      ? tr('确定将 "{n}" 移入回收站吗？\n（可在回收站恢复）', { n: items[0].name })
+      : tr('确定将选中的 {n} 项移入回收站吗？\n（可在回收站恢复）', { n: items.length });
     openConfirm(msg).then(function (ok) {
       if (!ok) return;
-      runBatch('移入回收站', items, function (it) {
+      runBatch(tr('移入回收站'), items, function (it) {
         return apiPost('/api/rm', { path: it.path, recursive: it.type === 'dir' });
       });
     });
   }
   function doDelete(item) { deleteItems([item]); }
   function copyBatch(items) {
-    openModal('批量复制到…（填写目标文件夹完整路径）', state.current && state.current.path.indexOf('*') < 0 ? state.current.path : '')
+    openModal(tr('批量复制到…（填写目标文件夹完整路径）'), state.current && state.current.path.indexOf('*') < 0 ? state.current.path : '')
       .then(function (to) {
         if (!to) return;
-        runBatch('复制', items, function (it) {
+        runBatch(tr('复制'), items, function (it) {
           return apiPost('/api/cp', { from: it.path, to: to + '\\' + it.name });
         });
       });
   }
   function moveBatch(items) {
-    openModal('批量移动到…（填写目标文件夹完整路径）', state.current && state.current.path.indexOf('*') < 0 ? state.current.path : '')
+    openModal(tr('批量移动到…（填写目标文件夹完整路径）'), state.current && state.current.path.indexOf('*') < 0 ? state.current.path : '')
       .then(function (to) {
         if (!to) return;
-        runBatch('移动', items, function (it) {
+        runBatch(tr('移动'), items, function (it) {
           return apiPost('/api/mv', { from: it.path, to: to + '\\' + it.name });
         });
       });
   }
   function downloadZip(items) {
     if (!items.length) return;
-    showToast('打包中… 共 ' + items.length + ' 项');
+    showToast(tr('打包中… 共 {n} 项', { n: items.length }));
     fetch('/api/zip-create', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -959,12 +1161,12 @@ body {
         a.href = u; a.download = 'download-' + Date.now() + '.zip';
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(function () { URL.revokeObjectURL(u); }, 5000);
-        showToast('打包下载完成');
+        showToast(tr('打包下载完成'));
       })
-      .catch(function (e) { showToast('打包下载失败: ' + e.message, 'error'); });
+      .catch(function (e) { showToast(tr('打包下载失败: ') + e.message, 'error'); });
   }
   function batchRename(items) {
-    openModal('批量重命名（{name}=原名 {n}=序号，扩展名保留）', '{n}_{name}').then(function (pat) {
+    openModal(tr('批量重命名（{name}=原名 {n}=序号，扩展名保留）'), '{n}_{name}').then(function (pat) {
       if (!pat) return;
       var jobs = [];
       items.forEach(function (it, i) {
@@ -974,20 +1176,20 @@ body {
         var nn = pat.replace(/\{name\}/g, base).replace(/\{n\}/g, String(i + 1)) + ext;
         if (nn !== it.name) jobs.push({ path: it.path, newName: nn });
       });
-      if (!jobs.length) { showToast('没有需要重命名的项目'); return; }
-      runBatch('重命名', jobs, function (j) {
+      if (!jobs.length) { showToast(tr('没有需要重命名的项目')); return; }
+      runBatch(tr('重命名'), jobs, function (j) {
         return apiPost('/api/rename', { path: j.path, newName: j.newName });
       });
     });
   }
   function extractAll(item) {
-    showToast('解压中…');
+    showToast(tr('解压中…'));
     apiPost('/api/extract-all', { path: item.path })
       .then(function (r) {
-        showToast('解压完成：新文件 ' + r.written + ' 个' + (r.skipped ? '，跳过已存在 ' + r.skipped + ' 个' : ''));
+        showToast(tr('解压完成：新文件 {w} 个', { w: r.written }) + (r.skipped ? tr('，跳过已存在 {s} 个', { s: r.skipped }) : ''));
         reload();
       })
-      .catch(function (e) { showToast('解压失败: ' + e.message, 'error'); });
+      .catch(function (e) { showToast(tr('解压失败: ') + e.message, 'error'); });
   }
 
   // —— 属性面板 ——
@@ -997,25 +1199,25 @@ body {
       .then(function (r) {
         var p = r.props;
         var rows = [
-          ['名称', p.name],
-          ['类型', p.type === 'dir' ? '文件夹' : '文件'],
-          ['位置', p.path],
-          ['大小', p.type === 'dir' ? (p.count >= 0 ? p.count + ' 个项目' : '—') : formatSize(p.size)],
-          ['创建时间', fmtTs(p.created)],
-          ['修改时间', fmtTs(p.modified)]
+          [tr('名称'), p.name],
+          [tr('类型'), p.type === 'dir' ? tr('文件夹') : tr('文件')],
+          [tr('位置'), p.path],
+          [tr('大小'), p.type === 'dir' ? (p.count >= 0 ? tr('{n} 个项目', { n: p.count }) : '—') : formatSize(p.size)],
+          [tr('创建时间'), fmtTs(p.created)],
+          [tr('修改时间'), fmtTs(p.modified)]
         ];
         if (p.md5) rows.push(['MD5', p.md5]);
         if (p.sha256) rows.push(['SHA256', p.sha256]);
         openProps(p.name, rows);
       })
-      .catch(function (e) { showToast('读取属性失败: ' + e.message, 'error'); });
+      .catch(function (e) { showToast(tr('读取属性失败: ') + e.message, 'error'); });
   }
   function openProps(title, rows) {
     var ov = document.createElement('div');
     ov.className = 'props-overlay';
     ov.innerHTML = '<div class="props-box"><div class="props-title"></div><div class="props-rows"></div>' +
-      '<div class="props-actions"><button class="btn">关闭</button></div></div>';
-    ov.querySelector('.props-title').textContent = '属性 — ' + title;
+      '<div class="props-actions"><button class="btn">' + tr('关闭') + '</button></div></div>';
+    ov.querySelector('.props-title').textContent = tr('属性 — {title}', { title: title });
     var wrap = ov.querySelector('.props-rows');
     rows.forEach(function (kv) {
       var r = document.createElement('div'); r.className = 'props-row';
@@ -1047,45 +1249,45 @@ body {
   }
   function recycleRestore(item) {
     apiPost('/api/recycle-restore', { id: item._recycle.id })
-      .then(function (r) { showToast('已恢复到 ' + r.restored); clearSelection(); reload(); })
-      .catch(function (e) { showToast('恢复失败: ' + e.message, 'error'); });
+      .then(function (r) { showToast(tr('已恢复到 {p}', { p: r.restored })); clearSelection(); reload(); })
+      .catch(function (e) { showToast(tr('恢复失败: ') + e.message, 'error'); });
   }
   function recyclePurge(item) {
-    openConfirm('确定彻底删除 "' + item.name + '" 吗？\n（不可恢复）').then(function (ok) {
+    openConfirm(tr('确定彻底删除 "{n}" 吗？\n（不可恢复）', { n: item.name })).then(function (ok) {
       if (!ok) return;
       apiPost('/api/recycle-purge', { id: item._recycle.id })
-        .then(function () { showToast('已彻底删除'); clearSelection(); reload(); })
-        .catch(function (e) { showToast('删除失败: ' + e.message, 'error'); });
+        .then(function () { showToast(tr('已彻底删除')); clearSelection(); reload(); })
+        .catch(function (e) { showToast(tr('删除失败: ') + e.message, 'error'); });
     });
   }
   function recycleEmpty() {
-    openConfirm('确定清空回收站吗？\n（所有暂存项目将被彻底删除，不可恢复）').then(function (ok) {
+    openConfirm(tr('确定清空回收站吗？\n（所有暂存项目将被彻底删除，不可恢复）')).then(function (ok) {
       if (!ok) return;
       apiPost('/api/recycle-empty', {})
-        .then(function (r) { showToast('已清空回收站（' + r.count + ' 项）'); clearSelection(); reload(); })
-        .catch(function (e) { showToast('清空失败: ' + e.message, 'error'); });
+        .then(function (r) { showToast(tr('已清空回收站（{n} 项）', { n: r.count })); clearSelection(); reload(); })
+        .catch(function (e) { showToast(tr('清空失败: ') + e.message, 'error'); });
     });
   }
 
   function recycleRestoreAll() {
-    openConfirm('确定将回收站全部项目恢复到原位置吗？').then(function (ok) {
+    openConfirm(tr('确定将回收站全部项目恢复到原位置吗？')).then(function (ok) {
       if (!ok) return;
       apiPost('/api/recycle-restore-all', {})
         .then(function (r) {
-          showToast(r.failed ? ('已恢复 ' + r.count + ' 项（' + r.failed + ' 项失败）') : ('已恢复 ' + r.count + ' 项'));
+          showToast(r.failed ? tr('已恢复 {n} 项（{f} 项失败）', { n: r.count, f: r.failed }) : tr('已恢复 {n} 项', { n: r.count }));
           clearSelection(); reload();
         })
-        .catch(function (e) { showToast('恢复失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('恢复失败: ') + e.message, 'error'); });
     });
   }
   function recycleRestoreMany(sel) {
-    openConfirm('确定将选中的 ' + sel.length + ' 项恢复到原位置吗？').then(function (ok) {
+    openConfirm(tr('确定将选中的 {n} 项恢复到原位置吗？', { n: sel.length })).then(function (ok) {
       if (!ok) return;
       var ids = sel.map(function (x) { return x._recycle.id; });
       var done = 0, fail = 0;
       var next = function (i) {
         if (i >= ids.length) {
-          showToast(fail ? ('已恢复 ' + done + ' 项（' + fail + ' 项失败）') : ('已恢复 ' + done + ' 项'));
+          showToast(fail ? tr('已恢复 {n} 项（{f} 项失败）', { n: done, f: fail }) : tr('已恢复 {n} 项', { n: done }));
           clearSelection(); reload(); return;
         }
         apiPost('/api/recycle-restore', { id: ids[i] })
@@ -1096,13 +1298,13 @@ body {
     });
   }
   function recyclePurgeMany(sel) {
-    openConfirm('确定彻底删除选中的 ' + sel.length + ' 项吗？\n（不可恢复）').then(function (ok) {
+    openConfirm(tr('确定彻底删除选中的 {n} 项吗？\n（不可恢复）', { n: sel.length })).then(function (ok) {
       if (!ok) return;
       var ids = sel.map(function (x) { return x._recycle.id; });
       var done = 0, fail = 0;
       var next = function (i) {
         if (i >= ids.length) {
-          showToast(fail ? ('已彻底删除 ' + done + ' 项（' + fail + ' 项失败）') : ('已彻底删除 ' + done + ' 项'));
+          showToast(fail ? tr('已彻底删除 {n} 项（{f} 项失败）', { n: done, f: fail }) : tr('已彻底删除 {n} 项', { n: done }));
           clearSelection(); reload(); return;
         }
         apiPost('/api/recycle-purge', { id: ids[i] })
@@ -1115,17 +1317,17 @@ body {
 
   // —— 递归搜索 ——
   function runSearch(q, root) {
-    if (!root || !root.path || root.path.indexOf('*') === 0) { showToast('请先打开一个文件夹再搜索', 'error'); return; }
+    if (!root || !root.path || root.path.indexOf('*') === 0) { showToast(tr('请先打开一个文件夹再搜索'), 'error'); return; }
     state.searchQ = q; state.searchRoot = root;
-    showToast('搜索中…');
+    showToast(tr('搜索中…'));
     return apiGet('/api/search?path=' + enc(root.path) + '&q=' + enc(q)).then(function (r) {
       state.current = { path: '*search*', source: root.source || 'local' };
       state.items = r.results || [];
       clearSelection();
       state.previewItem = null; previewEl.classList.remove('open');
       render();
-      showToast(r.truncated ? '搜索完成（超过 500 条，只显示前 500 条）' : ('搜索完成，共 ' + (r.results || []).length + ' 条'));
-    }).catch(function (e) { showToast('搜索失败: ' + e.message, 'error'); });
+      showToast(r.truncated ? tr('搜索完成（超过 500 条，只显示前 500 条）') : tr('搜索完成，共 {n} 条', { n: (r.results || []).length }));
+    }).catch(function (e) { showToast(tr('搜索失败: ') + e.message, 'error'); });
   }
 
   function makeItemEl(item) {
@@ -1134,7 +1336,7 @@ body {
     if (isSel(item)) div.classList.add('selected');
     div.setAttribute('data-path', item.path);
     div.title = item._recycle
-      ? (item.name + '（原位置: ' + item._recycle.originalPath + '，删除于 ' + fmtTs(item._recycle.deletedAt) + '）')
+      ? (item.name + tr('（原位置: {p}，删除于 {d}）', { p: item._recycle.originalPath, d: fmtTs(item._recycle.deletedAt) }))
       : item.name;   // hover 时以 tooltip 显示完整文件名
     if (state.viewMode === 'grid') {
       div.innerHTML = '<div class="icon">' + getIcon(item) + '</div><div class="name"></div>';
@@ -1185,10 +1387,10 @@ body {
   function renderStatus() {
     var total = state.items.length;
     var dirs = state.items.filter(function (i) { return i.type === 'dir'; }).length;
-    $('status-count').textContent = total + ' 项 · ' + dirs + ' 个文件夹 · ' + (total - dirs) + ' 个文件';
+    $('status-count').textContent = tr('{n} 项 · {d} 个文件夹 · {f} 个文件', { n: total, d: dirs, f: (total - dirs) });
     $('status-selection').textContent = state.multi.length > 1
-      ? ('已选择 ' + state.multi.length + ' 项')
-      : (state.selected ? '已选择: ' + state.selected.name : '');
+      ? tr('已选择 {n} 项', { n: state.multi.length })
+      : (state.selected ? tr('已选择: {n}', { n: state.selected.name }) : '');
     $('status-path').textContent = state.current ? state.current.path : '';
     $('status-path').title = state.current ? state.current.path : '';
   }
@@ -1244,7 +1446,7 @@ body {
         }
         render();
       }).catch(function (e) {
-        showToast('打开失败: ' + e.message, 'error');
+        showToast(tr('打开失败: ') + e.message, 'error');
       });
     }
     // —— 普通目录 ——
@@ -1261,7 +1463,7 @@ body {
       }
       render();
     }).catch(function (e) {
-      showToast('打开失败: ' + e.message, 'error');
+      showToast(tr('打开失败: ') + e.message, 'error');
     });
   }
   function navBack() {
@@ -1318,7 +1520,7 @@ body {
   // 复制文件名到剪贴板（含扩展名）
   function copyFileName(item) {
     var name = item.name || '';
-    var done = function () { showToast('已复制文件名'); };
+    var done = function () { showToast(tr('已复制文件名')); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(name).then(done, function () { fallbackCopy(name); done(); });
     } else {
@@ -1340,9 +1542,9 @@ body {
     fetch('/reveal?path=' + enc(item.path), { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        if (!d.ok) showToast('定位失败: ' + (d.error || '未知错误'), 'error');
+        if (!d.ok) showToast(tr('定位失败: ') + (d.error || tr('未知错误')), 'error');
       })
-      .catch(function (e) { showToast('定位失败: ' + e.message, 'error'); });
+      .catch(function (e) { showToast(tr('定位失败: ') + e.message, 'error'); });
   }
   function openItem(item) {
     if (item._recycle) return;   // 回收站项目不支持打开
@@ -1371,17 +1573,17 @@ body {
       })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-          if (!d.ok) showToast('打开失败: ' + (d.error || '未知错误'), 'error');
+          if (!d.ok) showToast(tr('打开失败: ') + (d.error || tr('未知错误')), 'error');
         })
-        .catch(function (e) { showToast('打开失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('打开失败: ') + e.message, 'error'); });
       return;
     }
     fetch('/open?path=' + enc(item.path), { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        if (!d.ok) showToast('打开失败: ' + (d.error || '未知错误'), 'error');
+        if (!d.ok) showToast(tr('打开失败: ') + (d.error || tr('未知错误')), 'error');
       })
-      .catch(function (e) { showToast('打开失败: ' + e.message, 'error'); });
+      .catch(function (e) { showToast(tr('打开失败: ') + e.message, 'error'); });
   }
   // —— ObjectURL 生命周期管理（审查 #13）：预览创建的 Blob URL 记账，
   // 切换/关闭预览时统一回收，防止长期运行反复预览 PDF/AI 文件导致 Blob 内存只增不减 ——
@@ -1427,7 +1629,7 @@ body {
           return;
         }
         previewBodyEl.innerHTML = '';
-        renderFallback(item, opt.dlUrl, '无法加载图片');
+        renderFallback(item, opt.dlUrl, tr('无法加载图片'));
       };
       img.src = opt.url;
       previewBodyEl.appendChild(img);
@@ -1450,7 +1652,7 @@ body {
     } else if (isOffice) {
       var loading = document.createElement('div');
       loading.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-      loading.textContent = '加载中...';
+      loading.textContent = tr('加载中...');
       previewBodyEl.appendChild(loading);
       var oTok = ++previewToken;
       apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
@@ -1461,7 +1663,7 @@ body {
           var wrap = document.createElement('div');
           wrap.className = 'office-html';
           if (window.DOMPurify) { wrap.innerHTML = DOMPurify.sanitize(r.html); }  // P1 #3 修复：文档内容不可信，防 HTML 注入
-          else { wrap.textContent = '预览安全组件缺失，请使用新版 index.html'; }  // 降级保护：无净化器时拒绝注入 HTML
+          else { wrap.textContent = tr('预览安全组件缺失，请使用新版 index.html'); }  // 降级保护：无净化器时拒绝注入 HTML
           previewBodyEl.appendChild(wrap);
         } else if (r.type === 'xlsx') {
           // xlsx: 渲染为表格，支持多 sheet
@@ -1479,7 +1681,7 @@ body {
     } else if (isDesign) {
       var loading = document.createElement('div');
       loading.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-      loading.textContent = '加载中...';
+      loading.textContent = tr('加载中...');
       previewBodyEl.appendChild(loading);
       var dTok = ++previewToken;
       apiGet('/api/office-preview?path=' + enc(item.path)).then(function (r) {
@@ -1518,7 +1720,7 @@ body {
           previewBodyEl.appendChild(img);
           var note = document.createElement('div');
           note.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
-          note.textContent = 'PSD 缩略图预览（完整内容请用 Photoshop 打开）';
+          note.textContent = tr('PSD 缩略图预览（完整内容请用 Photoshop 打开）');
           previewBodyEl.appendChild(note);
         } else if (r.type === 'raw-image') {
           // PSD 复合图像：canvas 渲染
@@ -1537,7 +1739,7 @@ body {
           previewBodyEl.appendChild(canvas);
           var note = document.createElement('div');
           note.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
-          note.textContent = 'PSD 复合图像预览（图层内容请用 Photoshop 打开）';
+          note.textContent = tr('PSD 复合图像预览（图层内容请用 Photoshop 打开）');
           previewBodyEl.appendChild(note);
         }
         addPreviewActions(item, opt.dlUrl);
@@ -1554,7 +1756,7 @@ body {
       // 文本类/无扩展名/小文件：拉取内容并显示
       var loading = document.createElement('div');
       loading.style.cssText = 'color:var(--text-2);font-size:12px;padding:8px;';
-      loading.textContent = '加载中...';
+      loading.textContent = tr('加载中...');
       previewBodyEl.appendChild(loading);
       var tTok = ++previewToken;
       opt.loadText().then(function (txt) {
@@ -1607,9 +1809,9 @@ body {
             return r.text();
           });
         },
-        loadTextPrefix: '无法读取: ',
+        loadTextPrefix: tr('无法读取: '),
         preStyle: 'white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;padding:12px;color:var(--text);background:var(--bg-2);border-radius:6px;max-height:70vh;overflow:auto;margin:0;',
-        fallbackInfo: '压缩包内文件 · ' + formatSize(item.size) + ' · 点击下载按钮获取'
+        fallbackInfo: tr('压缩包内文件 · {s} · 点击下载按钮获取', { s: formatSize(item.size) })
       });
       return;
     }
@@ -1688,7 +1890,7 @@ body {
       slide.appendChild(num);
       var content = document.createElement('div');
       content.style.cssText = 'font-size:13px;line-height:1.6;white-space:pre-wrap;';
-      content.textContent = text || '（此页无文本内容）';
+      content.textContent = text || tr('（此页无文本内容）');
       slide.appendChild(content);
       wrap.appendChild(slide);
     });
@@ -1697,7 +1899,7 @@ body {
   function renderFallback(item, dlUrl, err) {
     var p = document.createElement('p');
     p.style.color = 'var(--text-2)';
-    p.textContent = err ? '无法预览: ' + err : '此文件类型不支持预览';
+    p.textContent = err ? tr('无法预览: ') + err : tr('此文件类型不支持预览');
     previewBodyEl.appendChild(p);
     addPreviewActions(item, dlUrl);
   }
@@ -1719,25 +1921,25 @@ body {
     };
     if (item && item._recycleNode) {
       // —— 侧栏回收站节点右键：批量恢复 / 批量彻底删除（作用于回收站全部项目） ——
-      add('批量恢复到原位置', '♻️', recycleRestoreAll);
-      add('批量彻底删除', '🗑️', recycleEmpty, true);
+      add(tr('批量恢复到原位置'), '♻️', recycleRestoreAll);
+      add(tr('批量彻底删除'), '🗑️', recycleEmpty, true);
     } else if (item && item._recycle) {
       // —— 回收站项目：恢复 / 彻底删除（多选时提供批量） ——
       var rsel = selectedItems().filter(function (x) { return x._recycle; });
       if (rsel.length > 1) {
-        add('批量恢复到原位置', '♻️', function () { recycleRestoreMany(rsel); });
-        add('批量彻底删除', '🗑️', function () { recyclePurgeMany(rsel); }, true);
+        add(tr('批量恢复到原位置'), '♻️', function () { recycleRestoreMany(rsel); });
+        add(tr('批量彻底删除'), '🗑️', function () { recyclePurgeMany(rsel); }, true);
       } else {
-        if (item.type !== 'dir') add('预览', '👁️', function () { previewFile(item); });
-        add('恢复到原位置', '♻️', function () { recycleRestore(item); });
-        add('彻底删除', '🗑️', function () { recyclePurge(item); }, true);
+        if (item.type !== 'dir') add(tr('预览'), '👁️', function () { previewFile(item); });
+        add(tr('恢复到原位置'), '♻️', function () { recycleRestore(item); });
+        add(tr('彻底删除'), '🗑️', function () { recyclePurge(item); }, true);
       }
     } else if (item && item._entry) {
       // —— 首页入口卡片（盘符/桌面/共享主机根）：不提供收藏/复制/移动/重命名/删除 ——
-      if (item.type === 'dir') add('打开', '📂', function () { openItem(item); });
-      add('在资源管理器中显示', '📌', function () { revealItem(item); });
+      if (item.type === 'dir') add(tr('打开'), '📂', function () { openItem(item); });
+      add(tr('在资源管理器中显示'), '📌', function () { revealItem(item); });
       sep();
-      add('属性', 'ℹ️', function () { showProps(item); });
+      add(tr('属性'), 'ℹ️', function () { showProps(item); });
     } else if (item) {
       // 防御：path 含 :: 但 _zip 标记丢失时自动提取
       if (!item._zip && item.path && item.path.indexOf('::') > 0) {
@@ -1748,66 +1950,66 @@ body {
       // —— 压缩包内文件：预览/下载/系统打开 ——
       if (item._zip) {
         if (item.type !== 'dir') {
-          add('预览', '👁️', function () { previewFile(item); });
-          add('下载', '⬇', function () {
+          add(tr('预览'), '👁️', function () { previewFile(item); });
+          add(tr('下载'), '⬇', function () {
             window.open('/api/archive-extract?path=' + enc(item._zip) + '&entry=' + enc(item._zipEntry), '_blank');
           });
-          add('用系统程序打开', '🚀', function () { openWithSystem(item); });
+          add(tr('用系统程序打开'), '🚀', function () { openWithSystem(item); });
         } else {
-          add('打开', '📂', function () { openItem(item); });
+          add(tr('打开'), '📂', function () { openItem(item); });
         }
       } else {
         // —— 普通文件/目录：完整操作 ——
         var sel = selectedItems();
         if (sel.length > 1) {
-          add('打包下载', '🗜️', function () { downloadZip(sel); });
-          add('批量重命名', '🔤', function () { batchRename(sel); });
+          add(tr('打包下载'), '🗜️', function () { downloadZip(sel); });
+          add(tr('批量重命名'), '🔤', function () { batchRename(sel); });
           sep();
-          add('批量复制到…', '🔁', function () { copyBatch(sel); });
-          add('批量移动到…', '✂️', function () { moveBatch(sel); });
+          add(tr('批量复制到…'), '🔁', function () { copyBatch(sel); });
+          add(tr('批量移动到…'), '✂️', function () { moveBatch(sel); });
           sep();
-          add('批量删除（进回收站）', '🗑️', function () { deleteItems(sel); }, true);
+          add(tr('批量删除（进回收站）'), '🗑️', function () { deleteItems(sel); }, true);
         } else {
         if (item.type === 'dir') {
-          add('打开', '📂', function () { openItem(item); });
+          add(tr('打开'), '📂', function () { openItem(item); });
         } else {
-          add('预览', '👁️', function () { previewFile(item); });
-          add('下载', '⬇', function () {
+          add(tr('预览'), '👁️', function () { previewFile(item); });
+          add(tr('下载'), '⬇', function () {
             var a = document.createElement('a');
             a.href = '/api/raw?path=' + enc(item.path) + '&download=1';
             a.download = item.name;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
           });
-          add('用系统程序打开', '🚀', function () { openWithSystem(item); });
+          add(tr('用系统程序打开'), '🚀', function () { openWithSystem(item); });
         }
-        add('在资源管理器中显示', '📌', function () { revealItem(item); });
+        add(tr('在资源管理器中显示'), '📌', function () { revealItem(item); });
         sep();
-        add(isFav(item.path) ? '取消收藏' : '收藏到首页', '⭐', function () { toggleFavorite(item); });
+        add(isFav(item.path) ? tr('取消收藏') : tr('收藏到首页'), '⭐', function () { toggleFavorite(item); });
         sep();
-        add('复制文件名', '📋', function () { copyFileName(item); });
-        add('复制到…', '🔁', function () { doCopy(item); });
-        add('移动到…', '✂️', function () { doMove(item); });
+        add(tr('复制文件名'), '📋', function () { copyFileName(item); });
+        add(tr('复制到…'), '🔁', function () { doCopy(item); });
+        add(tr('移动到…'), '✂️', function () { doMove(item); });
         sep();
-        add('重命名', '✏️', function () { doRename(item); });
-        add('删除（进回收站）', '🗑️', function () { doDelete(item); }, true);
+        add(tr('重命名'), '✏️', function () { doRename(item); });
+        add(tr('删除（进回收站）'), '🗑️', function () { doDelete(item); }, true);
         if (item.type !== 'dir' && isArchiveExt(item.ext)) {
           sep();
-          add('解压到当前文件夹', '📦', function () { extractAll(item); });
+          add(tr('解压到当前文件夹'), '📦', function () { extractAll(item); });
         }
         sep();
-        add('属性', 'ℹ️', function () { showProps(item); });
+        add(tr('属性'), 'ℹ️', function () { showProps(item); });
         }
       }
     } else {
       // —— ZIP 内空白区：只允许刷新 ——
       if (state.current && state.current.path.indexOf('::') > 0) {
-        add('刷新', '⟳', reload);
+        add(tr('刷新'), '⟳', reload);
       } else if (state.current && state.current.path === '*recycle*') {
-        add('清空回收站', '🗑️', recycleEmpty, true);
+        add(tr('清空回收站'), '🗑️', recycleEmpty, true);
         sep();
-        add('刷新', '⟳', reload);
+        add(tr('刷新'), '⟳', reload);
       } else {
-        var newTrigger = add('新建', '➕', function () {
+        var newTrigger = add(tr('新建'), '➕', function () {
           if (!newMenuEl.classList.contains('show')) {
             showNewMenu(parseInt(contextMenuEl.style.left) + 24, parseInt(contextMenuEl.style.top) - 4);
           }
@@ -1819,9 +2021,9 @@ body {
           });
           newTrigger.addEventListener('mouseleave', scheduleHideNewMenu);
         }
-        add('上传文件', '⬆', function () { fileInput.click(); });
+        add(tr('上传文件'), '⬆', function () { fileInput.click(); });
         sep();
-        add('刷新', '⟳', reload);
+        add(tr('刷新'), '⟳', reload);
       }
     }
     contextMenuEl.classList.add('show');
@@ -1835,26 +2037,26 @@ body {
 
   function doMkdir() {
     if (!state.current || state.current.path === '*' || state.current.path === '*fav*' || state.current.path === '*recycle*' || state.current.path === '*search*') {
-      showToast('请先打开一个文件夹', 'error'); return;
+      showToast(tr('请先打开一个文件夹'), 'error'); return;
     }
-    openModal('新建文件夹', '新建文件夹').then(function (name) {
+    openModal(tr('新建文件夹'), tr('新建文件夹')).then(function (name) {
       if (!name) return;
       apiPost('/api/mkdir', { path: state.current.path, name: name })
         .then(reload)
-        .catch(function (e) { showToast('创建失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('创建失败: ') + e.message, 'error'); });
     });
   }
   function doMkfile(t) {
     if (!state.current || state.current.path === '*' || state.current.path === '*fav*' || state.current.path === '*recycle*' || state.current.path === '*search*') {
-      showToast('请先打开一个文件夹', 'error'); return;
+      showToast(tr('请先打开一个文件夹'), 'error'); return;
     }
-    openModal('新建' + t.name, '新建' + t.name + t.ext).then(function (name) {
+    openModal(tr('新建') + t.name, tr('新建') + t.name + t.ext).then(function (name) {
       if (!name) return;
       var ext = t.ext.toLowerCase();
       if (name.toLowerCase().slice(-ext.length) !== ext) name = name + t.ext;  // 后缀名自动补全
       apiPost('/api/mkfile', { path: state.current.path, name: name })
         .then(reload)
-        .catch(function (e) { showToast('创建失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('创建失败: ') + e.message, 'error'); });
     });
   }
 
@@ -1873,13 +2075,13 @@ body {
       d.onclick = function (e) { e.stopPropagation(); hideNewMenu(); fn(); };
       newMenuEl.appendChild(d);
     }
-    item('文件夹', '📁', doMkdir);
+    item(tr('文件夹'), '📁', doMkdir);
     if (newTypes && newTypes.length) {
       newTypes.forEach(function (t) {
         item(t.name + ' (' + t.ext + ')', '📄', function () { doMkfile(t); });
       });
     } else {
-      item('类型加载中…', '⏳', function () {});
+      item(tr('类型加载中…'), '⏳', function () {});
       loadNewTypes();
     }
     newMenuEl.classList.add('show');
@@ -1914,31 +2116,31 @@ body {
     if (!newMenuEl.contains(e.target)) hideNewMenu();
   });
   function doRename(item) {
-    openModal('重命名', item.name).then(function (name) {
+    openModal(tr('重命名'), item.name).then(function (name) {
       if (!name || name === item.name) return;
       apiPost('/api/rename', { path: item.path, newName: name })
         .then(reload)
-        .catch(function (e) { showToast('重命名失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('重命名失败: ') + e.message, 'error'); });
     });
   }
   // 复制到…：弹出目标路径输入框，确认后调用 /api/cp（后端递归复制）
   function doCopy(item) {
-    openModal('复制到…（填写完整目标路径）', item.path).then(function (to) {
+    openModal(tr('复制到…（填写完整目标路径）'), item.path).then(function (to) {
       if (!to || to === item.path) return;
-      showToast('复制中…');
+      showToast(tr('复制中…'));
       apiPost('/api/cp', { from: item.path, to: to })
         .then(function () {
-          showToast('复制完成');
+          showToast(tr('复制完成'));
           reload();
         })
-        .catch(function (e) { showToast('复制失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('复制失败: ') + e.message, 'error'); });
     });
   }
   // 移动到…：弹出目标路径输入框，确认后调用 /api/mv
   function doMove(item) {
-    openModal('移动到…（填写完整目标路径）', item.path).then(function (to) {
+    openModal(tr('移动到…（填写完整目标路径）'), item.path).then(function (to) {
       if (!to || to === item.path) return;
-      showToast('移动中…');
+      showToast(tr('移动中…'));
       apiPost('/api/mv', { from: item.path, to: to })
         .then(function () {
           if (state.selected && state.selected.path === item.path) state.selected = null; state.multi = []; state.anchor = null;
@@ -1946,14 +2148,14 @@ body {
             state.previewItem = null;
             previewEl.classList.remove('open');
           }
-          showToast('移动完成');
+          showToast(tr('移动完成'));
           reload();
         })
-        .catch(function (e) { showToast('移动失败: ' + e.message, 'error'); });
+        .catch(function (e) { showToast(tr('移动失败: ') + e.message, 'error'); });
     });
   }
   function doGoto() {
-    openModal('跳转到路径（绝对路径）', state.current && state.current.path !== '*' ? state.current.path : '')
+    openModal(tr('跳转到路径（绝对路径）'), state.current && state.current.path !== '*' ? state.current.path : '')
       .then(function (p) {
         if (!p) return;
         navTo({ path: p, source: state.current ? state.current.source : 'default' });
@@ -1961,16 +2163,16 @@ body {
   }
   function uploadFiles(files) {
     if (!state.current || state.current.path === '*' || state.current.path === '*fav*' || state.current.path === '*recycle*' || state.current.path === '*search*') {
-      showToast('请先打开一个文件夹', 'error'); return;
+      showToast(tr('请先打开一个文件夹'), 'error'); return;
     }
     var dir = state.current.path;
     var arr = Array.prototype.slice.call(files);
     if (!arr.length) return;
-    showToast('上传中… 共 ' + arr.length + ' 个文件');
+    showToast(tr('上传中… 共 {n} 个文件', { n: arr.length }));
     var idx = 0, ok = 0, fail = 0;
     function next() {
       if (idx >= arr.length) {
-        showToast('上传完成: ' + ok + ' 成功' + (fail ? ' / ' + fail + ' 失败' : ''),
+        showToast(tr('上传完成: {ok} 成功', { ok: ok }) + (fail ? tr(' / {f} 失败', { f: fail }) : ''),
           fail ? 'error' : 'ok');
         reload();
         return;
@@ -2018,7 +2220,7 @@ body {
       }
     } catch (e) {}
     $('sort-select').value = state.sortKey;
-    $('btn-sort-dir').textContent = state.sortAsc ? '↑ 升序' : '↓ 降序';
+    $('btn-sort-dir').textContent = state.sortAsc ? tr('↑ 升序') : tr('↓ 降序');
   })();
   // —— 排序下拉框：按名称 / 大小 / 修改时间 / 类型 ——
   $('sort-select').onchange = function (e) {
@@ -2029,7 +2231,7 @@ body {
   // —— 升序 / 降序切换 ——
   $('btn-sort-dir').onclick = function () {
     state.sortAsc = !state.sortAsc;
-    $('btn-sort-dir').textContent = state.sortAsc ? '↑ 升序' : '↓ 降序';
+    $('btn-sort-dir').textContent = state.sortAsc ? tr('↑ 升序') : tr('↓ 降序');
     saveSortPref();
     renderList();
   };
@@ -2048,7 +2250,7 @@ body {
     var b = $('btn-sidebar');
     if (b) {
       b.textContent = collapsed ? '◨' : '◧';
-      b.title = collapsed ? '展开侧栏 (Ctrl+B)' : '收起侧栏 (Ctrl+B)';
+      b.title = collapsed ? tr('展开侧栏 (Ctrl+B)') : tr('收起侧栏 (Ctrl+B)');
     }
   }
   $('btn-sidebar').onclick = function () {
@@ -2110,7 +2312,7 @@ body {
     btn.style.display = '';
     var fav = isFav(state.previewItem.path);
     btn.textContent = fav ? '⭐' : '☆';
-    btn.title = fav ? '取消收藏' : '收藏到首页';
+    btn.title = fav ? tr('取消收藏') : tr('收藏到首页');
   }
   $('preview-fav').onclick = function () {
     if (state.previewItem) toggleFavorite(state.previewItem);
@@ -2272,12 +2474,20 @@ body {
     }).catch(function (e) {
       var errDiv = document.createElement('div');  // P1 #3 修复：错误消息可能含恶意文件名，改用 textContent 绕开 innerHTML
       errDiv.style.cssText = 'padding:20px;color:var(--danger)';
-      errDiv.textContent = '加载失败: ' + e.message;
+      errDiv.textContent = tr('加载失败: ') + e.message;
       var treeEl = document.getElementById('tree');
       treeEl.innerHTML = '';
       treeEl.appendChild(errDiv);
     });
   }
+  // —— 语言切换器接线 ——
+  (function () {
+    var sel = $('lang-switch');
+    if (!sel) return;
+    sel.value = LANG;
+    sel.onchange = function () { setLang(sel.value); };
+  })();
+  applyI18n();
   init();
 })();
 </script>
