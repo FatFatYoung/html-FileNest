@@ -245,7 +245,14 @@ html-FileNest/
 
 ## Changelog
 
-**v2.0.0.0 (Latest)**
+**v2.0.1.0 (Latest)**
+
+**Fixes** (security)
+- Upload names `.` / `..` are now rejected — `POST /api/upload` with `name=..` wrote the file into the *parent* directory of the target folder (CWE-22), letting a crafted upload escape the selected folder.
+- The extension policy now covers every write path: upload, rename, move, copy, save and new-file creation all reject blocked executable extensions, including trailing-dot/space name variants such as `evil.exe.` / `evil.exe ` (Windows silently rewrites them to `evil.exe`). Previously any of these paths could plant an executable the policy was meant to block.
+- The Host/Origin security gate now also protects the legacy routes (`/ping`, `/open`, `/exists`, `/reveal`, `/open-folder`, `/cache/clear`) and `/api/*`: a forged `Host: evil.example` or a cross-site `Origin` receives 403 instead of a served response with a reflected `Access-Control-Allow-Origin`. Requests carrying neither header (curl, local scripts) are unaffected.
+
+**v2.0.0.0**
 
 **New features**
 - Collapsible sidebar — collapse/expand the directory tree from a toolbar button or `Ctrl+B`; the preference persists across sessions.
