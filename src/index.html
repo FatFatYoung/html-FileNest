@@ -895,6 +895,11 @@ body {
       state.items = r.drives.map(function (d) {
         return { name: d, path: d, type: 'dir', size: 0, mtime: 0, ext: '' };
       });
+      // 网络共享盘：映射盘/UNC 共享，与本地盘并列显示（映射盘已有盘符时不重复）
+      (r.net || []).forEach(function (n) {
+        if (n.letter && r.drives.indexOf(n.letter + '\\') >= 0) return;
+        state.items.push({ name: '🌐 ' + (n.letter ? (n.letter + ' → ' + n.path) : n.path), path: n.path, type: 'dir', size: 0, mtime: 0, ext: '', _net: true });
+      });
       if (state.desktop.path) state.items.push(desktopEntry());  // 桌面入口与盘符并列
       state.selected = null;
       render();

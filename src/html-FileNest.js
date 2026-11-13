@@ -513,7 +513,40 @@ function listDrives(res) {
     const d = String.fromCharCode(c) + ':\\';
     try { fs.accessSync(d); drives.push(d); } catch (e) {}
   }
-  sendJson(res, 200, { ok: true, drives });
+  listNetShares().then(net => sendJson(res, 200, { ok: true, drives, net }))
+    .catch(() => sendJson(res, 200, { ok: true, drives, net: [] }));
+}
+
+// —— 网络共享盘：映射网络驱动器 + 连接过的 UNC 共享 + 活跃 SMB 连接 + 本机对外共享 ——
+let netCache = null, netCacheAt = 0;
+async function listNetShares() {
+  const now = Date.now();
+  if (netCache && now - netCacheAt < 60000) return netCache;   // 60s 缓存
+  const ps = '$out=@(); ' +
+    'foreach ($m in @(Get-SmbGlobalMapping -ErrorAction SilentlyContinue; Get-SmbMapping -ErrorAction SilentlyContinue)) { ' +
+    'if ($m.RemotePath) { $out += [PSCustomObject]@{ path=$m.RemotePath; letter=$m.LocalPath } } }; ' +
+    'foreach ($c in @(Get-SmbConnection -ErrorAction SilentlyContinue)) { ' +
+    'if ($c.ShareName) { $out += [PSCustomObject]@{ path=(\"\\\\\" + $c.ServerName + \"\\\" + $c.ShareName); letter=$null } } }; ' +
+    '$rk=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(\"Network\"); ' +
+    'if ($rk) { foreach ($n in $rk.GetSubKeyNames()) { $rp=$rk.OpenSubKey($n).GetValue(\"RemotePath\"); ' +
+    'if ($rp) { $out += [PSCustomObject]@{ path=$rp; letter=($n + \":\") } } }; $rk.Close() }; ' +
+    'foreach ($s in (Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match \"^S-1-5-21\" } | ForEach-Object { $_.PSChildName })) { ' +
+    '$mp=[Microsoft.Win32.Registry]::Users.OpenSubKey($s + \"\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\"); ' +
+    'if ($mp) { foreach ($n in $mp.GetSubKeyNames()) { if ($n.StartsWith(\"##\") -and -not $n.StartsWith(\"###\")) { ' +
+    '$out += [PSCustomObject]@{ path=(\"\\\\\" + $n.Substring(2).Replace(\"#\",\"\\\")); letter=$null } } }; $mp.Close() } }; ' +
+    'foreach ($sh in @(Get-SmbShare -ErrorAction SilentlyContinue)) { if ($sh.Name -notmatch \"\\$$\") { ' +
+    '$out += [PSCustomObject]@{ path=(\"\\\\\" + $env:COMPUTERNAME + \"\\\" + $sh.Name); letter=$null } } }; ' +
+    '($out | Sort-Object path -Unique) | ConvertTo-Json -Compress';
+  const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+    { stdout: 'pipe', stderr: 'ignore' });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  let arr = [];
+  try { const j = JSON.parse(out.trim() || '[]'); arr = Array.isArray(j) ? j : [j]; } catch { }
+  netCache = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
+    .map(x => ({ path: x.path, letter: x.letter || null }));
+  netCacheAt = now;
+  return netCache;
 }
 
 // —— 桌面集成（所有位置页的桌面模块）——
