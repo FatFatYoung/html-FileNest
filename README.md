@@ -261,7 +261,7 @@ html-FileNest/
 - Properties dialog — right-click any item for name, type, location, size (contained-item count for folders), created/modified times and MD5/SHA-256 for files (`POST /api/props`).
 - `Enter` opens the selected item (double-click equivalent) and `Delete` deletes it via the confirm dialog.
 - The recycle bin gains batch restore-to-original-location and batch permanent-delete (sidebar and multi-select context menus).
-- Language switcher (中文简体 / English) — a dropdown to the right of the toolbar upload buttons, persisted in `localStorage.fn_lang`; every label, button, menu, dialog, toast, group title, tooltip and the window title switches language live.
+- Language switcher — a dropdown to the right of the toolbar upload buttons, persisted in `localStorage.fn_lang`; every label, button, menu, dialog, toast, group title, tooltip and the window title switches language live.
 
 **Improvements**
 - Friendly delete confirmation — deletion asks via the in-app dialog (multiline message, Esc / click-outside cancels) instead of the browser's native confirm/alert; success shows a status toast.
