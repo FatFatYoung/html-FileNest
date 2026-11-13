@@ -104,7 +104,15 @@ All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `
 | POST | `/api/favorites` | Add a favorite `{path, type}` |
 | POST | `/api/unfavorite` | Remove a favorite `{path}` |
 | POST | `/api/rename` | Rename `{path, newName}` |
-| POST | `/api/rm` | Delete `{path, recursive?}` |
+| POST | `/api/rm` | Move to recycle bin `{path, recursive?}` (truly deletes only with `purge: true`) |
+| GET | `/api/recycle` | List recycle-bin items (original path, deletion time) |
+| POST | `/api/recycle-restore` | Restore a recycled item `{id}` (name collisions get a " (恢复)" suffix) |
+| POST | `/api/recycle-purge` | Permanently delete one recycled item `{id}` |
+| POST | `/api/recycle-empty` | Permanently delete everything in the recycle bin |
+| GET | `/api/search?path=<abs>&q=<text>` | Recursive file/folder name search under `path` (cap 500 hits) |
+| POST | `/api/props` | File/folder properties `{path}` — size, times, MD5/SHA-256 |
+| POST | `/api/extract-all` | Extract a whole archive into its own folder `{path}` (skip-existing, Zip-Slip safe) |
+| POST | `/api/zip-create` | Pack multiple paths into one ZIP `{paths: []}` and return it as a download |
 | POST | `/api/mv` | Move `{from, to}` |
 | POST | `/api/cp` | Copy `{from, to}` (recursive) |
 | POST | `/api/write` | Write text file `{path, content}` |
@@ -246,6 +254,11 @@ html-FileNest/
 - UI: "My Favorites" (我的收藏) — a favorites module below the drives on the All-Locations page plus a folder node in the sidebar; right-click any file/folder and pick "收藏到首页 / 取消收藏" (toggle), or use the ☆ button in the preview pane header. Persisted to `favorites.json` (new `GET/POST /api/favorites`, `POST /api/unfavorite`).
 - UI: unified "New" (新建) menu — "New folder" and "New file" merge into one hover flyout menu (expands to the right on mouse-over, auto-closes when the pointer leaves) listing folder plus every file type registered in the Windows "New" context menu (live from registry `ShellNew` via `GET /api/newfile-types`); the create dialog pre-fills the matching extension and auto-appends it if removed.
 - UI: delete button in the preview header (next to download) deletes the file currently being previewed through the same confirmation flow.
+- UI: multi-select with batch operations — `Ctrl+Click` toggles items, `Shift+Click` selects a range, `Ctrl+A` selects all, and dragging on empty space draws a rubber-band box that selects everything it touches (`Esc` or a plain click on empty space clears). With several items selected the context menu switches to batch actions: pack-and-download as one ZIP (`POST /api/zip-create`), batch rename (pattern with `{name}`/`{n}`, extension preserved, iterates `POST /api/rename`), batch copy/move into a target folder and batch delete.
+- UI: recycle bin — deleting moves items into an app-level recycle bin instead of destroying them. A "Recycle Bin" (回收站) node sits in the sidebar and beside the drives on the All-Locations page; deleted items keep their original path and deletion time and can be restored (name collisions get a " (恢复)" suffix), permanently deleted one by one, or purged all at once. New `GET /api/recycle` and `POST /api/recycle-restore` / `/api/recycle-purge` / `/api/recycle-empty`; `POST /api/rm` now recycles by default and only truly deletes with `purge: true`.
+- UI: "Extract here" (解压到当前文件夹) for archives — the context menu of a zip/jar/tar/gz/tgz/rar/7z/bz2/xz file unpacks the whole archive into its own folder in one step (`POST /api/extract-all`). Existing files are skipped, never overwritten; entry paths are validated against Zip-Slip. zip/tar/gz are handled in-process, rar/7z/bz2/xz via 7-Zip.
+- UI: recursive search — pressing `Enter` in the search box searches file and folder names recursively beneath the current folder (`GET /api/search`, capped at 500 hits shown as relative paths with a truncated notice); double-clicking a hit opens it. The plain typing filter still narrows the current view only.
+- UI: properties dialog (属性) — right-click any item for name, type, location, size (contained-item count for folders), created/modified times and MD5/SHA-256 for files (`POST /api/props`).
 - Keyboard: `Enter` opens the selected item (double-click equivalent) and `Delete` deletes it via the confirm dialog. Shortcuts no longer fire while typing in inputs / the preview text editor, or while a dialog is open.
 - Fix: UI file lifecycle. Installing or upgrading now always refreshes `index.html` to the new version's UI — previously a leftover `index.html` from an old install was never overwritten, so UI updates never reached the deployment. The replaced file is backed up to `index.html.bak` first, and launching from the installed location still leaves the UI untouched so user customizations survive restarts. `--uninstall` now also removes `index.html` and `index.html.bak` (previously they were left behind and poisoned the next install).
 

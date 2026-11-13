@@ -412,6 +412,8 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/ls')     return await listDir(res, q, cfg);
       if (p === '/api/newfile-types') return await newfileTypesOp(res);
       if (p === '/api/favorites') return await favoritesListOp(res);
+      if (p === '/api/search')  return await searchOp(res, q, cfg);
+      if (p === '/api/recycle') return await recycleListOp(res);
       if (p === '/api/stat')   return await statPath(res, q, cfg);
       if (p === '/api/raw')    return await streamFile(req, res, q, cfg);
       if (p === '/api/read')   return await readTextFile(res, q, cfg);
@@ -432,6 +434,12 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/unfavorite') return await unfavoriteOp(res, data);
       if (p === '/api/rename') return await renameOp(res, data, cfg);
       if (p === '/api/rm')     return await rmOp(res, data, cfg);
+      if (p === '/api/extract-all')       return await extractAllOp(res, data, cfg);
+      if (p === '/api/props')             return await propsOp(res, data, cfg);
+      if (p === '/api/zip-create')        return await zipCreateOp(res, data, cfg);
+      if (p === '/api/recycle-restore')   return await recycleRestoreOp(res, data, cfg);
+      if (p === '/api/recycle-purge')     return await recyclePurgeOp(res, data, cfg);
+      if (p === '/api/recycle-empty')     return await recycleEmptyOp(res, data, cfg);
       if (p === '/api/mv')     return await mvOp(res, data, cfg);
       if (p === '/api/cp')     return await cpOp(res, data, cfg);
       if (p === '/api/write')  return await writeFileOp(res, data, cfg);
@@ -1553,16 +1561,256 @@ async function renameOp(res, data, cfg) {
   sendJson(res, 200, { ok: true, path: dst });
 }
 
+// ============ 回收站（应用内，删除默认进回收站可恢复） ============
+const RECYCLE_DIR  = path.join(INSTALL_DIR, 'recycle_bin');
+const RECYCLE_META = path.join(INSTALL_DIR, 'recycle_meta.json');
+
+async function recycleMetaList() {
+  try { return JSON.parse(await fs.promises.readFile(RECYCLE_META, 'utf8')) || []; } catch (e) { return []; }
+}
+async function recycleSave(list) {
+  await fs.promises.mkdir(RECYCLE_DIR, { recursive: true });
+  await fs.promises.writeFile(RECYCLE_META, JSON.stringify(list, null, 2));
+}
+async function recycleMove(target, st) {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const name = path.win32.basename(target);
+  const binPath = path.join(RECYCLE_DIR, id + '__' + name);
+  await fs.promises.mkdir(RECYCLE_DIR, { recursive: true });
+  try {
+    await fs.promises.rename(target, binPath);
+  } catch (e) {
+    if (e && e.code === 'EXDEV') {
+      await copyRecursive(target, binPath);
+      await fs.promises.rm(target, { recursive: true, force: true });
+    } else throw e;
+  }
+  const list = await recycleMetaList();
+  list.unshift({ id, name, originalPath: target, binPath, isDir: st.isDirectory(), size: st.size, deletedAt: Date.now() });
+  await recycleSave(list);
+  return id;
+}
+
 async function rmOp(res, data, cfg) {
   const target = resolveAllowedPath(data.path, cfg);
   const st = await fs.promises.stat(target);
-  if (st.isDirectory()) {
-    if (!data.recursive) throw new Error('directory requires recursive=true');
-    await fs.promises.rm(target, { recursive: true, force: false });
-  } else {
-    await fs.promises.unlink(target);
+  if (data.purge) {
+    // 彻底删除（回收站专用入口）
+    await fs.promises.rm(target, { recursive: true, force: true });
+    return sendJson(res, 200, { ok: true, purged: true });
   }
+  // 默认：移入回收站（可恢复），不再直接删除
+  const id = await recycleMove(target, st);
+  sendJson(res, 200, { ok: true, recycled: id });
+}
+
+async function recycleListOp(res) {
+  sendJson(res, 200, { ok: true, items: await recycleMetaList() });
+}
+
+async function recycleRestoreOp(res, data, cfg) {
+  const list = await recycleMetaList();
+  const info = list.find(x => x.id === data.id);
+  if (!info) throw new Error('recycle item not found');
+  let dest = info.originalPath;
+  if (fs.existsSync(dest)) {
+    // 原位置已被占用：加后缀避免覆盖
+    const ext = path.win32.extname(dest), base = dest.slice(0, dest.length - ext.length);
+    dest = base + ' (恢复)' + ext;
+    let n = 2;
+    while (fs.existsSync(dest)) dest = base + ' (恢复' + n++ + ')' + ext;
+  }
+  await fs.promises.mkdir(path.win32.dirname(dest), { recursive: true });
+  try {
+    await fs.promises.rename(info.binPath, dest);
+  } catch (e) {
+    if (e && e.code === 'EXDEV') {
+      await copyRecursive(info.binPath, dest);
+      await fs.promises.rm(info.binPath, { recursive: true, force: true });
+    } else throw e;
+  }
+  await recycleSave(list.filter(x => x.id !== info.id));
+  sendJson(res, 200, { ok: true, restored: dest });
+}
+
+async function recyclePurgeOp(res, data, cfg) {
+  const list = await recycleMetaList();
+  const info = list.find(x => x.id === data.id);
+  if (!info) throw new Error('recycle item not found');
+  await fs.promises.rm(info.binPath, { recursive: true, force: true });
+  await recycleSave(list.filter(x => x.id !== info.id));
   sendJson(res, 200, { ok: true });
+}
+
+async function recycleEmptyOp(res, data, cfg) {
+  const list = await recycleMetaList();
+  for (const info of list) {
+    try { await fs.promises.rm(info.binPath, { recursive: true, force: true }); } catch (e) {}
+  }
+  await recycleSave([]);
+  sendJson(res, 200, { ok: true, count: list.length });
+}
+
+// ============ 递归搜索（文件名包含匹配，上限 500 条） ============
+async function searchOp(res, q, cfg) {
+  const root = resolveAllowedPath(String(q.path || ''), cfg);
+  const kw = String(q.q || '').trim().toLowerCase();
+  if (!kw) return sendJson(res, 200, { ok: true, results: [] });
+  const results = [];
+  const LIMIT = 500;
+  async function walk(dir) {
+    if (results.length >= LIMIT) return;
+    let entries;
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const ent of entries) {
+      if (results.length >= LIMIT) return;
+      if (ent.isSymbolicLink()) continue;   // 防链接环
+      const full = path.win32.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (ent.name.toLowerCase().includes(kw)) {
+          results.push({ name: path.win32.relative(root, full), path: full, type: 'dir', size: 0, mtime: 0, ext: '' });
+        }
+        await walk(full);
+      } else if (ent.isFile()) {
+        if (ent.name.toLowerCase().includes(kw)) {
+          let size = 0, mtime = 0;
+          try { const st = await fs.promises.stat(full); size = st.size; mtime = Math.floor(st.mtimeMs); } catch (e) {}
+          results.push({ name: path.win32.relative(root, full), path: full, type: 'file', size, mtime, ext: path.win32.extname(ent.name).toLowerCase() });
+        }
+      }
+    }
+  }
+  await walk(root);
+  results.sort((a, b) => a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1);
+  sendJson(res, 200, { ok: true, results, truncated: results.length >= LIMIT });
+}
+
+// ============ 属性（大小/时间/文件哈希） ============
+async function propsOp(res, data, cfg) {
+  const target = resolveAllowedPath(data.path, cfg);
+  const st = await fs.promises.stat(target);
+  const out = {
+    name: path.win32.basename(target), path: target,
+    type: st.isDirectory() ? 'dir' : 'file',
+    size: st.size,
+    created: Math.floor(st.birthtimeMs), modified: Math.floor(st.mtimeMs)
+  };
+  if (st.isDirectory()) {
+    try { out.count = (await fs.promises.readdir(target)).length; } catch (e) { out.count = -1; }
+  } else {
+    const md5 = crypto.createHash('md5'), sha = crypto.createHash('sha256');
+    await new Promise((resolve, reject) => {
+      const s = fs.createReadStream(target);
+      s.on('data', c => { md5.update(c); sha.update(c); });
+      s.on('end', resolve);
+      s.on('error', reject);
+    });
+    out.md5 = md5.digest('hex');
+    out.sha256 = sha.digest('hex');
+  }
+  sendJson(res, 200, { ok: true, props: out });
+}
+
+// ============ 打包下载（多选打成 zip 返回） ============
+async function zipCreateOp(res, data, cfg) {
+  const paths = Array.isArray(data.paths) ? data.paths : [];
+  if (!paths.length || paths.length > 500) throw new Error('invalid paths');
+  const zip = new JSZip();
+  for (const p of paths) {
+    const src = resolveAllowedPath(p, cfg);
+    await addPathToZip(zip, src, path.win32.basename(src));
+  }
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  const fname = 'download-' + Date.now().toString(36) + '.zip';
+  res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(fname),
+    'Content-Length': buf.length
+  });
+  res.end(buf);
+}
+async function addPathToZip(zip, src, rel) {
+  const st = await fs.promises.stat(src);
+  if (st.isDirectory()) {
+    for (const ent of await fs.promises.readdir(src, { withFileTypes: true })) {
+      await addPathToZip(zip, path.win32.join(src, ent.name), rel + '/' + ent.name);
+    }
+  } else {
+    zip.file(rel.replace(/\\/g, '/'), await fs.promises.readFile(src));
+  }
+}
+
+// ============ 整包解压（解压到压缩包所在文件夹，已存在文件跳过，绝不覆盖） ============
+async function extractAllOp(res, data, cfg) {
+  const src = resolveAllowedPath(data.path, cfg);
+  const fmt = detectArchiveFormat(src);
+  if (!fmt) throw new Error('not a supported archive');
+  const dest = path.win32.resolve(path.win32.dirname(src));
+  let written = 0, skipped = 0;
+  async function writeEntry(relName, dataBuf) {
+    // Zip Slip 防护：条目路径必须落在目标文件夹内
+    const target = path.win32.resolve(dest, String(relName).replace(/[\\/]+/g, path.win32.sep));
+    if (!target.toLowerCase().startsWith(dest.toLowerCase() + path.win32.sep)) throw new Error('unsafe entry path: ' + relName);
+    if (fs.existsSync(target)) { skipped++; return; }
+    await fs.promises.mkdir(path.win32.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, dataBuf);
+    written++;
+  }
+  async function ensureDir(relName) {
+    const target = path.win32.resolve(dest, String(relName).replace(/[\\/]+/g, path.win32.sep));
+    if (!target.toLowerCase().startsWith(dest.toLowerCase() + path.win32.sep)) return;
+    if (!fs.existsSync(target)) await fs.promises.mkdir(target, { recursive: true });
+  }
+  if (fmt === 'zip') {
+    const zip = await JSZip.loadAsync(await fs.promises.readFile(src));
+    for (const name of Object.keys(zip.files)) {
+      const ent = zip.files[name];
+      if (ent.dir) { await ensureDir(name); continue; }
+      await writeEntry(name, await ent.async('nodebuffer'));
+    }
+  } else if (fmt === 'tar' || fmt === 'gz') {
+    let data = await fs.promises.readFile(src);
+    if (fmt === 'gz') {
+      data = zlib.gunzipSync(data);
+      // .tar.gz → 按 TAR 解；纯 .gz 单文件 → 解出单个文件
+      const entries = parseTarEntries(data);
+      const sane = entries.length > 0 && entries.every(e => !/[\x00-\x1f]/.test(e.name) && e.dataOffset + e.size <= data.length);
+      if (!sane) {
+        await writeEntry(path.win32.basename(src).replace(/\.gz$/i, ''), data);
+        return sendJson(res, 200, { ok: true, written, skipped });
+      }
+      for (const e of entries) {
+        if (e.type === 'dir') { await ensureDir(e.name); continue; }
+        await writeEntry(e.name, data.slice(e.dataOffset, e.dataOffset + e.size));
+      }
+    } else {
+      for (const e of parseTarEntries(data)) {
+        if (e.type === 'dir') { await ensureDir(e.name); continue; }
+        if (e.dataOffset + e.size > data.length) continue;   // 越界条目跳过（#9 同款防护）
+        await writeEntry(e.name, data.slice(e.dataOffset, e.dataOffset + e.size));
+      }
+    }
+  } else {
+    // rar / 7z / bz2 / xz：走 7z.exe，先解到临时目录再合并（已存在跳过，绝不覆盖）
+    const sevenZip = get7zExe();
+    const tmp = path.join(os.tmpdir(), 'filenest-extract-' + Date.now().toString(36));
+    await fs.promises.mkdir(tmp, { recursive: true });
+    try {
+      const r = spawnSync(sevenZip, ['x', '-y', '-o' + tmp, src], { windowsHide: true, timeout: 600000 });
+      if (r.status !== 0) throw new Error('7z extract failed');
+      async function merge(dir) {
+        for (const ent of await fs.promises.readdir(dir, { withFileTypes: true })) {
+          const s = path.win32.join(dir, ent.name);
+          if (ent.isDirectory()) await merge(s);
+          else await writeEntry(path.win32.relative(tmp, s), await fs.promises.readFile(s));
+        }
+      }
+      await merge(tmp);
+    } finally {
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
+  }
+  sendJson(res, 200, { ok: true, written, skipped });
 }
 
 async function mvOp(res, data, cfg) {
