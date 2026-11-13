@@ -255,6 +255,14 @@ function isLocalOrigin(o) {
     return h === '127.0.0.1' || h === 'localhost' || h === '::1';
   } catch (e) { return false; }
 }
+// If Origin is present it must be local. Without Origin (e.g. cross-site <img>/<script>),
+// fall back to Sec-Fetch-Site. Clients sending neither (curl, local scripts) are allowed.
+function requestOriginAllowed(req) {
+  const o = req.headers.origin;
+  if (o) return isLocalOrigin(o);
+  const site = req.headers['sec-fetch-site'];
+  return !site || site === 'same-origin' || site === 'none';
+}
 
 // ============ 服务 ============
 function runServer() {
@@ -282,7 +290,10 @@ function runServer() {
 function handleRequest(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  if (req.headers.origin && isLocalOrigin(req.headers.origin)) {
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers',
     'Content-Type, X-Requested-With, X-Auth-Token, Access-Control-Request-Private-Network');
@@ -296,6 +307,17 @@ function handleRequest(req, res) {
 
   const p = parsed.pathname, q = parsed.query || {};
   const cfg = loadConfig();
+
+  if (p === '/ping' || p === '/open' || p === '/exists' || p === '/reveal' ||
+      p === '/open-folder' || p === '/cache/clear') {
+    if (!isLocalHostHeader(req.headers.host)) {
+      return sendJson(res, 403, { ok: false, error: 'invalid host header' });
+    }
+    const secLegacy = cfg.security || {};
+    if (secLegacy.requireLocalOrigin !== false && !requestOriginAllowed(req)) {
+      return sendJson(res, 403, { ok: false, error: 'origin not allowed' });
+    }
+  }
 
   if (p === '/ping') {
     return sendJson(res, 200, {
@@ -397,7 +419,7 @@ async function handleApi(req, res, p, q, cfg) {
     return sendJson(res, 403, { ok: false, error: 'invalid host header' });
   }
   const sec = cfg.security || {};
-  if (sec.requireLocalOrigin !== false && !isLocalOrigin(req.headers.origin)) {
+  if (sec.requireLocalOrigin !== false && !requestOriginAllowed(req)) {
     return sendJson(res, 403, { ok: false, error: 'origin not allowed' });
   }
   if (sec.authToken && req.headers['x-auth-token'] !== sec.authToken) {
@@ -1668,6 +1690,11 @@ async function renameOp(res, data, cfg) {
   }
   const dst = path.win32.join(path.win32.dirname(src), name);
   if (dst === src) return sendJson(res, 200, { ok: true, path: dst });
+  const st = await fs.promises.stat(src);
+  if (!st.isDirectory()) {
+    const extCheck = checkExtension(dst, cfg);
+    if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
+  }
   await fs.promises.rename(src, dst);
   sendJson(res, 200, { ok: true, path: dst });
 }
@@ -1951,6 +1978,11 @@ async function extractAllOp(res, data, cfg) {
 async function mvOp(res, data, cfg) {
   const src = resolveAllowedPath(data.from, cfg);
   const dst = resolveAllowedPath(data.to, cfg);
+  const st = await fs.promises.stat(src);
+  if (!st.isDirectory()) {
+    const extCheck = checkExtension(dst, cfg);
+    if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
+  }
   try {
     await fs.promises.rename(src, dst);
   } catch (e) {
@@ -1971,6 +2003,11 @@ async function cpOp(res, data, cfg) {
   const dst = resolveAllowedPath(data.to, cfg);
   if (path.win32.normalize(src).toLowerCase() === path.win32.normalize(dst).toLowerCase()) {
     throw new Error('source and destination are the same');
+  }
+  const st = await fs.promises.stat(src);
+  if (!st.isDirectory()) {
+    const extCheck = checkExtension(dst, cfg);
+    if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   }
   await copyRecursive(src, dst);
   sendJson(res, 200, { ok: true });
@@ -1997,6 +2034,8 @@ async function copyRecursive(src, dst) {
 async function writeFileOp(res, data, cfg) {
   const file = resolveAllowedPath(data.path, cfg);
   const content = String(data.content || '');
+  const extCheck = checkExtension(file, cfg);
+  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   await fs.promises.writeFile(file, content, 'utf8');
   sendJson(res, 200, { ok: true, path: file });
 }
@@ -2063,8 +2102,12 @@ async function openOp(res, data, cfg) {
 async function uploadOp(req, res, q, cfg) {
   const dir = resolveAllowedPath(q.path, cfg);
   const name = String(q.name || '').trim();
-  if (!name || /[\\\/:*?"<>|]/.test(name)) throw new Error('invalid name');
-  const full = path.win32.join(dir, name);
+  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..' || /[. ]$/.test(name)) {
+    throw new Error('invalid name');
+  }
+  const full = resolveAllowedPath(path.win32.join(dir, name), cfg);
+  const extCheck = checkExtension(full, cfg);
+  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   const overwrite = q.overwrite === '1';
   if (!overwrite && fs.existsSync(full)) throw new Error('file exists: ' + name);
 
