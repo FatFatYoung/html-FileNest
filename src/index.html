@@ -479,6 +479,7 @@ body {
     "重命名失败: ": "Rename failed: ",
     "删除（进回收站）": "Delete (to recycle bin)",
     "解压到当前文件夹": "Extract here",
+    "当前目录已搜索完毕，是否继续搜索下级目录文件？": "Current folder searched. Continue into subfolders?",
     "刷新": "Refresh",
     "清空回收站": "Empty recycle bin",
     "新建": "New",
@@ -1111,7 +1112,7 @@ body {
   }
   function fmtTs(ms) { return ms ? formatTime(ms) : '—'; }
   function isArchiveExt(ext) {
-    return ['.zip', '.jar', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz'].indexOf(normExt(ext)) >= 0;
+    return ['zip', 'jar', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz'].indexOf(normExt(ext)) >= 0;   // 不带点：normExt 已去点小写（修：带点导致永不匹配）
   }
   // —— 批量操作 ——
   function runBatch(label, items, fn) {
@@ -1346,6 +1347,32 @@ body {
       render();
       showToast(r.truncated ? tr('搜索完成（超过 500 条，只显示前 500 条）') : tr('搜索完成，共 {n} 条', { n: (r.results || []).length }));
     }).catch(function (e) { showToast(tr('搜索失败: ') + e.message, 'error'); });
+  }
+
+  // —— 两阶段搜索：第一阶段只搜当前目录（不递归），完毕后询问是否继续搜索下级目录 ——
+  function searchPhase1(q, root) {
+    if (!root || !root.path || root.path.indexOf('*') === 0) { showToast(tr('请先打开一个文件夹再搜索'), 'error'); return; }
+    state.searchQ = q; state.searchRoot = root;
+    // 缓存当前目录条目（进入搜索视图后 state.items 会被结果覆盖）
+    if (!(state.searchBase && state.searchBase.path === root.path)) {
+      var baseItems = (state.current && state.current.path === root.path) ? state.items.slice() : [];
+      state.searchBase = { path: root.path, items: baseItems };
+    }
+    var base = state.searchBase.items;
+    var lq = q.toLowerCase();
+    var hits = [];
+    for (var i = 0; i < base.length; i++) {
+      if (base[i].name && base[i].name.toLowerCase().indexOf(lq) >= 0) hits.push(base[i]);
+    }
+    state.current = { path: '*search*', source: root.source || 'local' };
+    state.items = hits;
+    clearSelection();
+    state.previewItem = null; previewEl.classList.remove('open');
+    render();
+    showToast(tr('搜索完成，共 {n} 条', { n: hits.length }));
+    openConfirm(tr('当前目录已搜索完毕，是否继续搜索下级目录文件？')).then(function (ok) {
+      if (ok) runSearch(q, root);
+    });
   }
 
   function makeItemEl(item) {
@@ -2373,7 +2400,7 @@ body {
     }
     searchTimer = setTimeout(function () {
       var root = currentSearchRoot();
-      if (root) runSearch(q, root);
+      if (root) searchPhase1(q, root);
     }, 400);
   };
   $('search').addEventListener('keydown', function (e) {
@@ -2382,7 +2409,7 @@ body {
     if (!q) return;
     if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
     var root = currentSearchRoot();
-    if (root) runSearch(q, root);
+    if (root) searchPhase1(q, root);
   });
 
   // —— 鼠标框选多选（橡皮筋选择） ——

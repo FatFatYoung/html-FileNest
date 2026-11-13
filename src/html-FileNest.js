@@ -1876,16 +1876,24 @@ async function extractAllOp(res, data, cfg) {
   let written = 0, skipped = 0;
   async function writeEntry(relName, dataBuf) {
     // Zip Slip 防护：条目路径必须落在目标文件夹内
-    const target = path.win32.resolve(dest, String(relName).replace(/[\\/]+/g, path.win32.sep));
-    if (!target.toLowerCase().startsWith(dest.toLowerCase() + path.win32.sep)) throw new Error('unsafe entry path: ' + relName);
+    // 修：dest 为盘符根时结尾本就带分隔符，再拼 sep 使前缀多一个分隔符，startsWith 永假，误杀一切条目；
+    //     同时去掉条目名开头分隔符并拒绝 '..' 段与盘符前缀
+    const name = String(relName).replace(/^[\\/]+/, '');
+    if (!name || /^[a-zA-Z]:/.test(name) || /(^|[\\/])\.\.([\\/]|$)/.test(name)) throw new Error('unsafe entry path: ' + relName);
+    const target = path.win32.resolve(dest, name.replace(/[\\/]+/g, path.win32.sep));
+    const base = dest.endsWith(path.win32.sep) ? dest : dest + path.win32.sep;
+    if (!target.toLowerCase().startsWith(base.toLowerCase())) throw new Error('unsafe entry path: ' + relName);
     if (fs.existsSync(target)) { skipped++; return; }
     await fs.promises.mkdir(path.win32.dirname(target), { recursive: true });
     await fs.promises.writeFile(target, dataBuf);
     written++;
   }
   async function ensureDir(relName) {
-    const target = path.win32.resolve(dest, String(relName).replace(/[\\/]+/g, path.win32.sep));
-    if (!target.toLowerCase().startsWith(dest.toLowerCase() + path.win32.sep)) return;
+    const name = String(relName).replace(/^[\\/]+/, '');
+    if (!name || /^[a-zA-Z]:/.test(name) || /(^|[\\/])\.\.([\\/]|$)/.test(name)) return;
+    const target = path.win32.resolve(dest, name.replace(/[\\/]+/g, path.win32.sep));
+    const base = dest.endsWith(path.win32.sep) ? dest : dest + path.win32.sep;
+    if (!target.toLowerCase().startsWith(base.toLowerCase())) return;
     if (!fs.existsSync(target)) await fs.promises.mkdir(target, { recursive: true });
   }
   if (fmt === 'zip') {
