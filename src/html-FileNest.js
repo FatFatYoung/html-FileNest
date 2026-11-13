@@ -552,19 +552,20 @@ async function listNetShares() {
   await proc.exited;
   let arr = [];
   try { const j = JSON.parse(out.trim() || '[]'); arr = Array.isArray(j) ? j : [j]; } catch { }
-  netCache = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
-    .map(x => ({ path: x.path, letter: x.letter || null }))
-    // 无盘符 UNC 条目收敛到主机根（\\server\share\... → \\server）：
-    // 进去可浏览该主机的全部共享，而不是只显示某个访问过的子目录（2026-11-13 杨总指示）
-    .map(x => {
-      if (x.letter) return x;
-      const p = String(x.path);
-      if (p.startsWith('\\\\')) {
-        const host = p.slice(2).split('\\')[0];
-        if (host) return { path: '\\\\' + host, letter: null };
+    // —— 通用归一规则（产品级，不针对任何具体主机/机器） ——
+    // 所有网络共享条目一律收敛到主机根：任何 \\host\share\... 深度的路径
+    // （映射盘符 / UNC 记录 / 活跃 SMB 连接，任何主机、任何深度）统一归一为 \\host，
+    // 与 C:\ D:\ 同级呈现；映射盘符保留盘符作为入口，点击仍进盘根（2026-11-13 杨总指示）
+    const toHostRoot = (p) => {
+      const s = String(p);
+      if (s.startsWith('\\\\')) {
+        const host = s.slice(2).split('\\')[0];
+        if (host) return '\\\\' + host;
       }
-      return x;
-    })
+      return s;
+    };
+  netCache = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
+    .map(x => ({ path: toHostRoot(x.path), letter: x.letter || null }))
     .filter((x, i, a) => a.findIndex(y => (y.letter || '') === (x.letter || '') && y.path.toLowerCase() === x.path.toLowerCase()) === i);
   netCacheAt = now;
   return netCache;
