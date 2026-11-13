@@ -355,8 +355,8 @@ body {
     historyIdx: -1,
     viewMode: 'grid',
     filter: '',
-    sortKey: 'name',   // 排序字段：name / size / mtime / type
-    sortAsc: true,     // 升序 / 降序
+    sortKey: 'mtime',  // 排序字段：name / size / mtime / type（默认按修改时间）
+    sortAsc: false,    // 升序 / 降序（默认降序）
     group: false,      // 按类型分组显示
     desktop: { loading: false, ready: false, path: '', items: [] }  // 桌面模块缓存
   };
@@ -581,6 +581,10 @@ body {
       div.onclick = (function (node) {
         return function () { navTo({ path: node.path, source: node.source || (state.current && state.current.source) }); };
       })(node);
+      div.oncontextmenu = function (e) {
+        e.preventDefault();
+        if (node.path === '*recycle*') showContextMenu(e.clientX, e.clientY, { _recycleNode: true });
+      };
       el.appendChild(div);
     });
   }
@@ -701,7 +705,10 @@ body {
   // —— 排序（客户端实现，对已获取的 items 副本操作，不改动 state.items） ——
   function sortItems(arr) {
     var k = state.sortKey, dir = state.sortAsc ? 1 : -1;
-    return arr.slice().sort(function (a, b) {
+    // 入口卡片（盘符/桌面/共享主机根）不参与排序，保持原始顺序置顶
+    var entries = [], rest = [];
+    arr.forEach(function (x) { (x._entry ? entries : rest).push(x); });
+    return entries.concat(rest.slice().sort(function (a, b) {
       // 文件夹始终排在文件前面（与后端默认一致）
       if ((a.type === 'dir') !== (b.type === 'dir')) return a.type === 'dir' ? -1 : 1;
       var r = 0;
@@ -714,27 +721,22 @@ body {
       }
       if (r === 0) r = a.name.localeCompare(b.name, 'zh', { numeric: true });
       return r * dir;
-    });
+    }));
   }
   // —— 分组：按类型归类 ——
   function itemCategory(item) {
     if (item.type === 'dir') return '文件夹';
     var e = normExt(item.ext);
     if (['jpg','jpeg','jpe','jfif','png','gif','webp','svg','bmp','ico','avif','apng','tif','tiff','heic','heif'].indexOf(e) >= 0) return '图片';
-    if (['mp4','webm','mkv','mov','avi','flv','ogv'].indexOf(e) >= 0) return '视频';
-    if (['mp3','wav','flac','m4a','ogg','aac'].indexOf(e) >= 0) return '音频';
     if (['zip','rar','7z','tar','gz','bz2','xz'].indexOf(e) >= 0) return '压缩包';
-    if (['txt','text','md','markdown','json','js','mjs','cjs','ts','jsx','tsx','html','htm',
-      'css','scss','less','xml','yml','yaml','toml','ini','conf','cfg','log','csv','sh',
-      'py','rb','go','rs','java','c','h','cpp','hpp','cs','php','sql','pdf','doc','docx',
-      'xls','xlsx','ppt','pptx'].indexOf(e) >= 0) return '文档';
-    return '其他';
+    // 其余细化到按后缀名分组（无后缀单独一组）
+    return e ? '.' + e : '无后缀';
   }
-  var CATEGORY_ORDER = ['文件夹', '文档', '图片', '视频', '音频', '压缩包', '其他'];
+  var CATEGORY_HEAD = ['文件夹', '图片', '压缩包'];   // 固定在前的类别；其余按后缀名分组
 
   // —— 桌面入口（所有位置页）：桌面文件夹入口与盘符并列 ——
   function desktopEntry() {
-    return { name: '桌面', path: state.desktop.path, type: 'dir', size: 0, mtime: 0, ext: '', _desktop: true };
+    return { name: '桌面', path: state.desktop.path, type: 'dir', size: 0, mtime: 0, ext: '', _desktop: true, _entry: true };
   }
   function loadDesktop(force) {
     var d = state.desktop;
@@ -806,15 +808,27 @@ body {
       return;
     }
     if (state.group) {
-      // 分组显示：按固定类别顺序渲染分组标题 + 组内条目
-      CATEGORY_ORDER.forEach(function (cat) {
-        var group = items.filter(function (it) { return itemCategory(it) === cat; });
-        if (!group.length) return;
+      // 分组显示：入口卡片不参与分组（平铺置顶）；文件夹/图片/压缩包固定在前，
+      // 其余细化到按后缀名分组（数量多的在前）
+      var entryItems = [], groupedItems = [];
+      items.forEach(function (x) { (x._entry ? entryItems : groupedItems).push(x); });
+      entryItems.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+      var buckets = {};
+      groupedItems.forEach(function (x) {
+        var c = itemCategory(x);
+        (buckets[c] = buckets[c] || []).push(x);
+      });
+      Object.keys(buckets).sort(function (a, b) {
+        var ia = CATEGORY_HEAD.indexOf(a), ib = CATEGORY_HEAD.indexOf(b);
+        if (ia >= 0 || ib >= 0) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+        if (buckets[b].length !== buckets[a].length) return buckets[b].length - buckets[a].length;
+        return a.localeCompare(b, 'zh');
+      }).forEach(function (cat) {
         var h = document.createElement('div');
         h.className = 'group-title';
-        h.textContent = cat + '（' + group.length + '）';
+        h.textContent = cat + '（' + buckets[cat].length + '）';
         listEl.appendChild(h);
-        group.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+        buckets[cat].forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
       });
     } else {
       items.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
@@ -872,10 +886,6 @@ body {
   function isArchiveExt(ext) {
     return ['.zip', '.jar', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz'].indexOf(normExt(ext)) >= 0;
   }
-  function recycleEntry() {
-    return { name: '回收站', path: '*recycle*', type: 'dir', size: 0, mtime: 0, ext: '' };
-  }
-
   // —— 批量操作 ——
   function runBatch(label, items, fn) {
     if (!items.length) return;
@@ -1047,6 +1057,52 @@ body {
       apiPost('/api/recycle-empty', {})
         .then(function (r) { showToast('已清空回收站（' + r.count + ' 项）'); clearSelection(); reload(); })
         .catch(function (e) { showToast('清空失败: ' + e.message, 'error'); });
+    });
+  }
+
+  function recycleRestoreAll() {
+    openConfirm('确定将回收站全部项目恢复到原位置吗？').then(function (ok) {
+      if (!ok) return;
+      apiPost('/api/recycle-restore-all', {})
+        .then(function (r) {
+          showToast(r.failed ? ('已恢复 ' + r.count + ' 项（' + r.failed + ' 项失败）') : ('已恢复 ' + r.count + ' 项'));
+          clearSelection(); reload();
+        })
+        .catch(function (e) { showToast('恢复失败: ' + e.message, 'error'); });
+    });
+  }
+  function recycleRestoreMany(sel) {
+    openConfirm('确定将选中的 ' + sel.length + ' 项恢复到原位置吗？').then(function (ok) {
+      if (!ok) return;
+      var ids = sel.map(function (x) { return x._recycle.id; });
+      var done = 0, fail = 0;
+      var next = function (i) {
+        if (i >= ids.length) {
+          showToast(fail ? ('已恢复 ' + done + ' 项（' + fail + ' 项失败）') : ('已恢复 ' + done + ' 项'));
+          clearSelection(); reload(); return;
+        }
+        apiPost('/api/recycle-restore', { id: ids[i] })
+          .then(function () { done++; next(i + 1); })
+          .catch(function () { fail++; next(i + 1); });
+      };
+      next(0);
+    });
+  }
+  function recyclePurgeMany(sel) {
+    openConfirm('确定彻底删除选中的 ' + sel.length + ' 项吗？\n（不可恢复）').then(function (ok) {
+      if (!ok) return;
+      var ids = sel.map(function (x) { return x._recycle.id; });
+      var done = 0, fail = 0;
+      var next = function (i) {
+        if (i >= ids.length) {
+          showToast(fail ? ('已彻底删除 ' + done + ' 项（' + fail + ' 项失败）') : ('已彻底删除 ' + done + ' 项'));
+          clearSelection(); reload(); return;
+        }
+        apiPost('/api/recycle-purge', { id: ids[i] })
+          .then(function () { done++; next(i + 1); })
+          .catch(function () { fail++; next(i + 1); });
+      };
+      next(0);
     });
   }
 
@@ -1239,19 +1295,27 @@ body {
     return apiGet('/api/drives').then(function (r) {
       state.current = { path: '*', source: 'default' };
       state.items = r.drives.map(function (d) {
-        return { name: d, path: d, type: 'dir', size: 0, mtime: 0, ext: '' };
+        return { name: d, path: d, type: 'dir', size: 0, mtime: 0, ext: '', _entry: true };
       });
       // 网络共享盘：映射盘/UNC 共享，与本地盘并列显示（映射盘已有盘符时不重复）
       (r.net || []).forEach(function (n) {
         if (n.letter && r.drives.indexOf(n.letter + '\\') >= 0) return;
-        state.items.push({ name: '🌐 ' + (n.letter ? (n.letter + ' → ' + n.path) : n.path), path: n.path, type: 'dir', size: 0, mtime: 0, ext: '', _net: true });
+        state.items.push({ name: '🌐 ' + (n.letter ? (n.letter + ' → ' + n.path) : n.path), path: n.path, type: 'dir', size: 0, mtime: 0, ext: '', _net: true, _entry: true });
       });
       if (state.desktop.path) state.items.push(desktopEntry());  // 桌面入口与盘符并列
-      state.items.push(recycleEntry());                          // 回收站入口与盘符并列
       state.selected = null; state.multi = []; state.anchor = null;
       render();
       loadDesktop(true);   // 先用缓存渲染，后台静默刷新
     });
+  }
+  // 在资源管理器中定位（/reveal，选中文件）
+  function revealItem(item) {
+    fetch('/reveal?path=' + enc(item.path), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) showToast('定位失败: ' + (d.error || '未知错误'), 'error');
+      })
+      .catch(function (e) { showToast('定位失败: ' + e.message, 'error'); });
   }
   function openItem(item) {
     if (item._recycle) return;   // 回收站项目不支持打开
@@ -1626,10 +1690,26 @@ body {
       d.className = 'sep';
       contextMenuEl.appendChild(d);
     };
-    if (item && item._recycle) {
-      // —— 回收站项目：恢复 / 彻底删除 ——
-      add('恢复到原位置', '♻️', function () { recycleRestore(item); });
-      add('彻底删除', '🗑️', function () { recyclePurge(item); }, true);
+    if (item && item._recycleNode) {
+      // —— 侧栏回收站节点右键：批量恢复 / 批量彻底删除（作用于回收站全部项目） ——
+      add('批量恢复到原位置', '♻️', recycleRestoreAll);
+      add('批量彻底删除', '🗑️', recycleEmpty, true);
+    } else if (item && item._recycle) {
+      // —— 回收站项目：恢复 / 彻底删除（多选时提供批量） ——
+      var rsel = selectedItems().filter(function (x) { return x._recycle; });
+      if (rsel.length > 1) {
+        add('批量恢复到原位置', '♻️', function () { recycleRestoreMany(rsel); });
+        add('批量彻底删除', '🗑️', function () { recyclePurgeMany(rsel); }, true);
+      } else {
+        add('恢复到原位置', '♻️', function () { recycleRestore(item); });
+        add('彻底删除', '🗑️', function () { recyclePurge(item); }, true);
+      }
+    } else if (item && item._entry) {
+      // —— 首页入口卡片（盘符/桌面/共享主机根）：不提供收藏/复制/移动/重命名/删除 ——
+      if (item.type === 'dir') add('打开', '📂', function () { openItem(item); });
+      add('在资源管理器中显示', '📌', function () { revealItem(item); });
+      sep();
+      add('属性', 'ℹ️', function () { showProps(item); });
     } else if (item) {
       // 防御：path 含 :: 但 _zip 标记丢失时自动提取
       if (!item._zip && item.path && item.path.indexOf('::') > 0) {
@@ -1672,14 +1752,7 @@ body {
           });
           add('用系统程序打开', '🚀', function () { openWithSystem(item); });
         }
-        add('在资源管理器中显示', '📌', function () {
-          fetch('/reveal?path=' + enc(item.path), { credentials: 'same-origin' })
-            .then(function (r) { return r.json(); })
-            .then(function (d) {
-              if (!d.ok) showToast('定位失败: ' + (d.error || '未知错误'), 'error');
-            })
-            .catch(function (e) { showToast('定位失败: ' + e.message, 'error'); });
-        });
+        add('在资源管理器中显示', '📌', function () { revealItem(item); });
         sep();
         add(isFav(item.path) ? '取消收藏' : '收藏到首页', '⭐', function () { toggleFavorite(item); });
         sep();
@@ -1904,15 +1977,31 @@ body {
     $('btn-toggle-view').textContent = state.viewMode === 'grid' ? '▦' : '☰';
     renderList();
   };
+  // —— 排序偏好：默认按修改时间降序；用户改过则记住习惯（localStorage 持久化） ——
+  function saveSortPref() {
+    try { localStorage.setItem('fn-sort', JSON.stringify({ key: state.sortKey, asc: state.sortAsc })); } catch (e) {}
+  }
+  (function () {
+    try {
+      var s = JSON.parse(localStorage.getItem('fn-sort') || 'null');
+      if (s && ['name', 'size', 'mtime', 'type'].indexOf(s.key) >= 0 && typeof s.asc === 'boolean') {
+        state.sortKey = s.key; state.sortAsc = s.asc;
+      }
+    } catch (e) {}
+    $('sort-select').value = state.sortKey;
+    $('btn-sort-dir').textContent = state.sortAsc ? '↑ 升序' : '↓ 降序';
+  })();
   // —— 排序下拉框：按名称 / 大小 / 修改时间 / 类型 ——
   $('sort-select').onchange = function (e) {
     state.sortKey = e.target.value;
+    saveSortPref();
     renderList();
   };
   // —— 升序 / 降序切换 ——
   $('btn-sort-dir').onclick = function () {
     state.sortAsc = !state.sortAsc;
     $('btn-sort-dir').textContent = state.sortAsc ? '↑ 升序' : '↓ 降序';
+    saveSortPref();
     renderList();
   };
   // —— 分组开关：按类型分组显示 ——

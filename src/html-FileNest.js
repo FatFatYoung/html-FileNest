@@ -438,6 +438,7 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/props')             return await propsOp(res, data, cfg);
       if (p === '/api/zip-create')        return await zipCreateOp(res, data, cfg);
       if (p === '/api/recycle-restore')   return await recycleRestoreOp(res, data, cfg);
+      if (p === '/api/recycle-restore-all') return await recycleRestoreAllOp(res);
       if (p === '/api/recycle-purge')     return await recyclePurgeOp(res, data, cfg);
       if (p === '/api/recycle-empty')     return await recycleEmptyOp(res, data, cfg);
       if (p === '/api/mv')     return await mvOp(res, data, cfg);
@@ -1718,10 +1719,7 @@ async function recycleListOp(res) {
   sendJson(res, 200, { ok: true, items: await recycleMetaList() });
 }
 
-async function recycleRestoreOp(res, data, cfg) {
-  const list = await recycleMetaList();
-  const info = list.find(x => x.id === data.id);
-  if (!info) throw new Error('recycle item not found');
+async function recycleRestoreOne(info) {
   let dest = info.originalPath;
   if (fs.existsSync(dest)) {
     // 原位置已被占用：加后缀避免覆盖
@@ -1739,8 +1737,27 @@ async function recycleRestoreOp(res, data, cfg) {
       await fs.promises.rm(info.binPath, { recursive: true, force: true });
     } else throw e;
   }
+  return dest;
+}
+
+async function recycleRestoreOp(res, data, cfg) {
+  const list = await recycleMetaList();
+  const info = list.find(x => x.id === data.id);
+  if (!info) throw new Error('recycle item not found');
+  const dest = await recycleRestoreOne(info);
   await recycleSave(list.filter(x => x.id !== info.id));
   sendJson(res, 200, { ok: true, restored: dest });
+}
+
+async function recycleRestoreAllOp(res) {
+  const list = await recycleMetaList();
+  const remain = [];
+  let count = 0;
+  for (const info of list) {
+    try { await recycleRestoreOne(info); count++; } catch (e) { remain.push(info); }
+  }
+  await recycleSave(remain);
+  sendJson(res, 200, { ok: true, count, failed: remain.length });
 }
 
 async function recyclePurgeOp(res, data, cfg) {
