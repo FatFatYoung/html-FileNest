@@ -553,7 +553,19 @@ async function listNetShares() {
   let arr = [];
   try { const j = JSON.parse(out.trim() || '[]'); arr = Array.isArray(j) ? j : [j]; } catch { }
   netCache = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
-    .map(x => ({ path: x.path, letter: x.letter || null }));
+    .map(x => ({ path: x.path, letter: x.letter || null }))
+    // 无盘符 UNC 条目收敛到主机根（\\server\share\... → \\server）：
+    // 进去可浏览该主机的全部共享，而不是只显示某个访问过的子目录（2026-11-13 杨总指示）
+    .map(x => {
+      if (x.letter) return x;
+      const p = String(x.path);
+      if (p.startsWith('\\\\')) {
+        const host = p.slice(2).split('\\')[0];
+        if (host) return { path: '\\\\' + host, letter: null };
+      }
+      return x;
+    })
+    .filter((x, i, a) => a.findIndex(y => (y.letter || '') === (x.letter || '') && y.path.toLowerCase() === x.path.toLowerCase()) === i);
   netCacheAt = now;
   return netCache;
 }
