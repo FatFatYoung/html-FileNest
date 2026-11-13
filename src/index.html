@@ -316,9 +316,9 @@ body {
     <header class="preview-header">
       <span class="title" id="preview-title"></span>
       <button class="icon-btn" id="preview-fav" title="收藏到首页">☆</button>
-      <button class="icon-btn" id="preview-open" title="用系统程序打开">📂</button>
+      <button class="icon-btn" id="preview-open" title="用系统程序打开">🚀</button>
       <button class="icon-btn" id="preview-download" title="下载">⬇</button>
-      <button class="icon-btn" id="preview-delete" title="删除">🗑</button>
+      <button class="icon-btn" id="preview-delete" title="删除">🗑️</button>
       <button class="icon-btn" id="preview-close" title="关闭">✕</button>
     </header>
     <div class="preview-body" id="preview-body"></div>
@@ -733,6 +733,7 @@ body {
     return e ? '.' + e : '无后缀';
   }
   var CATEGORY_HEAD = ['文件夹', '图片', '压缩包'];   // 固定在前的类别；其余按后缀名分组
+  var groupCollapsed = {};   // 分组展开/收起状态
 
   // —— 桌面入口（所有位置页）：桌面文件夹入口与盘符并列 ——
   function desktopEntry() {
@@ -826,9 +827,15 @@ body {
       }).forEach(function (cat) {
         var h = document.createElement('div');
         h.className = 'group-title';
-        h.textContent = cat + '（' + buckets[cat].length + '）';
+        h.style.cursor = 'pointer';
+        h.title = '点击展开 / 收起';
+        h.textContent = (groupCollapsed[cat] ? '▸ ' : '▾ ') + cat + '（' + buckets[cat].length + '）';
+        h.onclick = function () {
+          groupCollapsed[cat] = !groupCollapsed[cat];
+          renderList();
+        };
         listEl.appendChild(h);
-        buckets[cat].forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+        if (!groupCollapsed[cat]) buckets[cat].forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
       });
     } else {
       items.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
@@ -1029,7 +1036,7 @@ body {
       state.items = (r.items || []).map(function (it) {
         return {
           name: it.name, path: it.binPath, type: it.isDir ? 'dir' : 'file',
-          size: it.size || 0, mtime: it.deletedAt || 0, ext: '',
+          size: it.size || 0, mtime: it.deletedAt || 0, ext: (it.name.match(/\.([^.]+)$/) || ['', ''])[1].toLowerCase(),
           _recycle: { id: it.id, originalPath: it.originalPath, deletedAt: it.deletedAt }
         };
       });
@@ -1140,7 +1147,7 @@ body {
       div.querySelector('.name').textContent = item.name;
     }
     div.onclick = function (e) {
-      if (item._recycle) { selectItem(item); return; }
+      if (item._recycle) { selectItem(item); if (item.type !== 'dir') previewFile(item); return; }
       // Ctrl/Shift 多选；普通点选 = 单选
       if (e && (e.ctrlKey || e.metaKey)) {
         toggleSel(item);
@@ -1307,6 +1314,26 @@ body {
       render();
       loadDesktop(true);   // 先用缓存渲染，后台静默刷新
     });
+  }
+  // 复制文件名到剪贴板（含扩展名）
+  function copyFileName(item) {
+    var name = item.name || '';
+    var done = function () { showToast('已复制文件名'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(name).then(done, function () { fallbackCopy(name); done(); });
+    } else {
+      fallbackCopy(name);
+      done();
+    }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
   }
   // 在资源管理器中定位（/reveal，选中文件）
   function revealItem(item) {
@@ -1701,6 +1728,7 @@ body {
         add('批量恢复到原位置', '♻️', function () { recycleRestoreMany(rsel); });
         add('批量彻底删除', '🗑️', function () { recyclePurgeMany(rsel); }, true);
       } else {
+        if (item.type !== 'dir') add('预览', '👁️', function () { previewFile(item); });
         add('恢复到原位置', '♻️', function () { recycleRestore(item); });
         add('彻底删除', '🗑️', function () { recyclePurge(item); }, true);
       }
@@ -1756,6 +1784,7 @@ body {
         sep();
         add(isFav(item.path) ? '取消收藏' : '收藏到首页', '⭐', function () { toggleFavorite(item); });
         sep();
+        add('复制文件名', '📋', function () { copyFileName(item); });
         add('复制到…', '🔁', function () { doCopy(item); });
         add('移动到…', '✂️', function () { doMove(item); });
         sep();
@@ -2065,11 +2094,20 @@ body {
   };
   $('preview-delete').onclick = function () {
     var item = state.previewItem;
-    if (item) doDelete(item);
+    if (!item) return;
+    if (item._recycle) {
+      // 回收站项目：删除 = 彻底删除
+      recyclePurge(item);
+      previewEl.classList.remove('open');
+    } else {
+      doDelete(item);
+    }
   };
   function updatePreviewFavBtn() {
     var btn = $('preview-fav');
     if (!btn || !state.previewItem) return;
+    if (state.previewItem._recycle) { btn.style.display = 'none'; return; }
+    btn.style.display = '';
     var fav = isFav(state.previewItem.path);
     btn.textContent = fav ? '⭐' : '☆';
     btn.title = fav ? '取消收藏' : '收藏到首页';
