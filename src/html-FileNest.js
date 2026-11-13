@@ -1724,9 +1724,9 @@ async function recycleRestoreOne(info) {
   if (fs.existsSync(dest)) {
     // 原位置已被占用：加后缀避免覆盖
     const ext = path.win32.extname(dest), base = dest.slice(0, dest.length - ext.length);
-    dest = base + ' (恢复)' + ext;
+    dest = base + ' (restored)' + ext;
     let n = 2;
-    while (fs.existsSync(dest)) dest = base + ' (恢复' + n++ + ')' + ext;
+    while (fs.existsSync(dest)) dest = base + ' (restored' + n++ + ')' + ext;
   }
   await fs.promises.mkdir(path.win32.dirname(dest), { recursive: true });
   try {
