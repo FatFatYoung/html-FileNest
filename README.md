@@ -66,7 +66,7 @@ Open `http://127.0.0.1:20000/ping` — a JSON response with `"ok": true` means e
 
 ## API Reference
 
-All API endpoints are protected by a webpage allowlist: the app's own UI origin (localhost/127.0.0.1 on the configured ports - default `http://127.0.0.1:20000`, `https://127.0.0.1:20443`) is always allowed and is not subject to the list; other sites must be registered in `security.allowedOrigins` (full origin or bare domain); an empty list (default) rejects every other site.
+All API endpoints are protected by a webpage allowlist: the app's own UI origin - localhost/127.0.0.1 on the ports configured in `config.json` (hot-reloaded, so changing `ports` takes effect without restart; defaults `http://127.0.0.1:20000`, `https://127.0.0.1:20443`) is always allowed and is not subject to the list; same-origin calls whose `Origin` host matches the request `Host` are always allowed as well. Other sites must be registered in `security.allowedOrigins`, either as a full origin (`http://192.168.1.10` - exact scheme, host and port) or as a bare domain (`192.168.1.10` - exact hostname, any scheme or port). Matching is exact: no wildcards and no subdomain inheritance - `b.a.com` needs its own entry even when `a.com` is listed. An empty list (default) rejects every other site; `Origin: null` is always rejected. Requests with no `Origin` (curl, local scripts) are allowed.
 
 ### Health Check
 
@@ -161,7 +161,7 @@ Edit `C:\html-FileNest\config.json`:
 | `sources.*.roots` | Allowed root paths. `"*"` = all drives. Use `"C:\\Users\\me\\*"` to restrict scope |
 | `allowedExtensions` | Whitelist of allowed extensions. Empty array = no restriction |
 | `blockExecutables` | Reject executable files (default: true) |
-| `security.allowedOrigins` | Webpage allowlist for API callers. The app's own UI origin (localhost/127.0.0.1 on the configured ports; defaults 20000/20443) is always allowed and not subject to the list; entries are full origins (`http://192.168.1.10`) or bare domains (`192.168.1.10`); empty list (default) rejects every other site |
+| `security.allowedOrigins` | Webpage allowlist for API callers. The app's own UI origin (localhost/127.0.0.1 on the configured ports; defaults 20000/20443; same-origin calls with matching `Host` included) is always allowed and not subject to the list; entries are full origins (`http://192.168.1.10`: exact scheme+host+port) or bare domains (`192.168.1.10`: exact hostname, any scheme/port); exact match only - no wildcards, no subdomain inheritance (`b.a.com` needs its own entry); empty list (default) rejects every other site; `Origin: null` is always rejected |
 | `security.requireLocalOrigin` | Only accept requests from localhost (default: true) |
 | `security.authToken` | Optional auth token for API access |
 
