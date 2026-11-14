@@ -247,17 +247,36 @@ function doUninstall() {
 function serviceControlVbs(exePath, alsoRelaunch) {
   const exe = String(exePath).replace(/"/g, '""');
   const L = [];
-  if (alsoRelaunch) L.push('WScript.Sleep 2000');  // 等 HTTP 响应发完再动手
   L.push('On Error Resume Next');
   L.push('Set wmi = GetObject("winmgmts:\\\\.\\root\\cimv2")');
+  L.push('Function SvcAlive()');
+  L.push('  SvcAlive = False');
+  L.push("  For Each q In wmi.ExecQuery(\"SELECT CommandLine, ExecutablePath FROM Win32_Process WHERE Name = 'html-FileNest.exe'\")");
+  L.push('    If Not q.ExecutablePath Is Nothing Then');
+  L.push('      If LCase(q.ExecutablePath) = LCase("' + exe + '") And InStr(q.CommandLine, "--serve") > 0 Then SvcAlive = True');
+  L.push('    End If');
+  L.push('  Next');
+  L.push('End Function');
+  if (alsoRelaunch) L.push('WScript.Sleep 2000');  // 等 HTTP 响应发完再动手
   L.push("For Each p In wmi.ExecQuery(\"SELECT ProcessId, CommandLine, ExecutablePath FROM Win32_Process WHERE Name = 'html-FileNest.exe'\")");
   L.push('  If Not p.ExecutablePath Is Nothing Then');
   L.push('    If LCase(p.ExecutablePath) = LCase("' + exe + '") And InStr(p.CommandLine, "--serve") > 0 Then p.Terminate');
   L.push('  End If');
   L.push('Next');
   if (alsoRelaunch) {
-    L.push('WScript.Sleep 1000');  // 等端口释放
-    L.push('CreateObject("WScript.Shell").Run """' + exe + '"" --serve", 0, False');
+    L.push('WScript.Sleep 2000');  // 等端口释放（Terminate 后句柄释放可能慢，1 秒不够）
+    L.push('For i = 1 To 5');
+    L.push('  CreateObject("WScript.Shell").Run """' + exe + '"" --serve", 0, False');
+    L.push('  WScript.Sleep 3000');
+    L.push('  If SvcAlive() Then Exit For');
+    L.push('  WScript.Sleep 2000');
+    L.push('Next');
+    L.push('If Not SvcAlive() Then');
+    L.push('  Set fso = CreateObject("Scripting.FileSystemObject")');
+    L.push('  Set f = fso.CreateTextFile(fso.GetParentFolderName("' + exe + '") & "\\restart-failed.log", True)');
+    L.push('  f.WriteLine CStr(Now) & " relaunch failed: ' + exe + '"');
+    L.push('  f.Close');
+    L.push('End If');
   }
   return L.join('\r\n') + '\r\n';
 }
@@ -265,9 +284,13 @@ function serviceControlVbs(exePath, alsoRelaunch) {
 function runServiceControl(alsoRelaunch) {
   const vbs = path.join(process.env.TEMP || process.env.TMP || '.',
     'html-FileNest-service-' + (alsoRelaunch ? 'restart' : 'stop') + '-' + process.pid + '.vbs');
-  fs.writeFileSync(vbs, serviceControlVbs(process.execPath, alsoRelaunch), 'ascii');
+  // UTF-16 LE + BOM 写入：wscript 按 BOM 解码，exe 路径含中文/特殊字符才不会被 ascii 打碎成 '?'
+  fs.writeFileSync(vbs, Buffer.concat([
+    Buffer.from([0xFF, 0xFE]),
+    Buffer.from(serviceControlVbs(process.execPath, alsoRelaunch), 'utf16le')
+  ]));
   if (alsoRelaunch) {
-    // 外力脚本自带"等响应->杀旧->等端口->拉起"序列，调用方立即返回即可
+    // 外力脚本自带"等响应->杀旧->等端口->拉起->验证重试"序列，调用方立即返回即可
     spawn('wscript.exe', [vbs], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   } else {
     spawnSync('cscript.exe', ['//Nologo', vbs], { stdio: 'ignore', windowsHide: true });
@@ -342,8 +365,13 @@ function requestOriginAllowed(req) {
 // ============ 服务 ============
 function runServer() {
   const cfg = loadConfig();
+  // ★ HTTP 监听失败必须退出：进程活着但端口不通的"半活"状态比死进程更糟——
+  //   死进程能被计划任务/重启脚本拉起，半活僵尸会让服务永远隐身（重启后"再也进不去"）
   http.createServer(handleRequest)
-    .on('error', e => log('HTTP ' + cfg.ports.http + ' error: ' + (e.code || e.message)))
+    .on('error', e => {
+      log('HTTP ' + cfg.ports.http + ' error: ' + (e.code || e.message) + ' -> exit');
+      process.exit(1);
+    })
     .listen(cfg.ports.http, HOST, () => log('HTTP  http://' + HOST + ':' + cfg.ports.http));
 
   if (fs.existsSync(PFX_PATH)) {
