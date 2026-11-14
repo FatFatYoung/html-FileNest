@@ -306,6 +306,7 @@ body {
       <button class="btn" id="btn-new" title="新建（文件夹 / 文件类型）" data-i18n-title="新建（文件夹 / 文件类型）" data-i18n="新建 ▾">新建 ▾</button>
       <button class="btn primary" id="btn-upload" title="上传文件 (Ctrl+U)" data-i18n-title="上传文件 (Ctrl+U)" data-i18n="上传">上传</button>
       <select class="search" id="lang-switch" title="语言 / Language" style="max-width:92px"><option value="zh">中文简体</option><option value="en">English</option></select>
+      <button class="icon-btn" id="btn-restart" title="重启服务" data-i18n-title="重启服务">⏻</button>
     </header>
     <div class="file-list grid-view" id="file-list"></div>
     <footer class="statusbar">
@@ -347,6 +348,10 @@ body {
   var LANG = 'zh';
   try { LANG = localStorage.getItem('fn_lang') === 'en' ? 'en' : 'zh'; } catch (e) {}
   var I18N_EN = {
+    "重启服务": "Restart service",
+    "重启服务？\n网页会短暂断开，几秒后自动恢复": "Restart the service?\nThe page will briefly disconnect and reconnect in a few seconds",
+    "重启中…": "Restarting…",
+    "重启失败: ": "Restart failed: ",
     "html-FileNest · 本地文件管理器": "html-FileNest · Local File Manager",
     "松开鼠标上传文件": "Drop to upload files",
     "目录树": "Directory Tree",
@@ -2236,6 +2241,24 @@ body {
   $('btn-fwd').onclick = navFwd;
   $('btn-up').onclick = navUp;
   $('btn-refresh').onclick = reload;
+
+  // —— 重启服务（改端口/换证书/升级后自助重启，客户机运维入口） ——
+  $('btn-restart').onclick = function () {
+    openConfirm(tr('重启服务？\n网页会短暂断开，几秒后自动恢复')).then(function (ok) {
+      if (!ok) return;
+      showToast(tr('重启中…'));
+      fetch('/api/service-restart', { method: 'POST' }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var t0 = Date.now();
+        var timer = setInterval(function () {
+          fetch('/ping').then(function (r2) {
+            if (r2.ok) { clearInterval(timer); location.reload(); }
+          }).catch(function () {});
+          if (Date.now() - t0 > 30000) clearInterval(timer);
+        }, 1000);
+      }).catch(function (e) { showToast(tr('重启失败: ') + e.message, 'error'); });
+    });
+  };
   $('btn-new').addEventListener('mouseenter', function () {
     var r = $('btn-new').getBoundingClientRect();
     showNewMenu(r.right + 4, r.top);       // 右侧展开二级菜单
