@@ -326,13 +326,21 @@ function isLocalHostHeader(h) {
 function normalizeOrigin(o) {
   try { return new URL(o).origin; } catch (e) { return ''; }
 }
-// 应用主页恒放行，不参与白名单：http://127.0.0.1:20000、https://127.0.0.1:20443（含 localhost/::1）
+// 应用主页恒放行，不参与白名单：本机（127.0.0.1 / localhost / ::1）+ 配置端口（cfg.ports，
+// 默认 20000/20443）。端口跟随 config.json 动态判定（热加载，改端口后自家 UI 照常恒放行）；
+// 另有 Origin==Host 同源判定兜底（见 requestOriginAllowed）。
 function isSelfOrigin(o) {
   try {
     const u = new URL(o);
     const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     if (h !== '127.0.0.1' && h !== 'localhost' && h !== '::1') return false;
-    return (u.protocol === 'http:' && u.port === '20000') || (u.protocol === 'https:' && u.port === '20443');
+    const ports = loadConfig().ports || DEFAULT_PORTS;
+    const httpPort = String(ports.http || DEFAULT_PORTS.http);
+    const httpsPort = String(ports.https || DEFAULT_PORTS.https);
+    // URL 显式端口缺省时（http://h:80、https://h:443）u.port 为空串，归一化后再比
+    const p = u.port || (u.protocol === 'https:' ? '443' : '80');
+    return (u.protocol === 'http:' && p === httpPort) ||
+           (u.protocol === 'https:' && p === httpsPort);
   } catch (e) { return false; }
 }
 // 调用网页白名单：主页恒放行；只对其他站点生效，空名单默认全禁止；
