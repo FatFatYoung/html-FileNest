@@ -18,7 +18,7 @@ html-FileNest is a lightweight web-based file manager that runs locally on Windo
 - 🛡️ **Crash-Proof** — Global exception catching keeps the service alive
 - ⚡ **One-Click Deploy** — Double-click to deploy, auto-start on boot, HTTPS with self-signed certificate
 - 🗑️ **One-Click Uninstall** — `--uninstall` removes the service and certificates completely
-- 🔄 **Service Control** — `--restart` / `--stop` commands, plus a ⏻ restart button in the UI (for config/ certificate changes and upgrades)
+- 🔄 **Service Control** — `--restart` / `--stop` commands, plus a restart button at the top of the left sidebar with icon and label (for config/ certificate changes and upgrades)
 
 ## Architecture
 
@@ -263,7 +263,7 @@ html-FileNest/
 
 **New features**
 - **Caller webpage allowlist (`security.allowedOrigins`)**: the app's own UI origin (localhost/127.0.0.1 on the configured ports - default `http://127.0.0.1:20000`, `https://127.0.0.1:20443`; same-origin calls with matching `Host` are also always allowed) is always allowed and is not subject to the whitelist. The whitelist only applies to other sites - entries may be full origins (`http://192.168.1.10`) or bare domains (`192.168.1.10`); an empty list (the default) rejects every other site. `Origin: null` is always rejected. Requests with no `Origin` (curl, local scripts) are allowed as before.
-  - **One-command service restart/stop for deployed installs**: CLI commands `--restart` (stop then relaunch the service) and `--stop`, endpoint `POST /api/service-restart`, and a toolbar restart button (with confirmation and auto-reload). Service control runs through a one-shot VBS that kills only the same-exe `--serve` instance (per-install precise), so multiple installs never affect each other.
+  - **One-command service restart/stop for deployed installs**: CLI commands `--restart` (stop then relaunch the service) and `--stop`, endpoint `POST /api/service-restart`, and a restart button at the top of the left sidebar (with icon, label, confirmation and auto-reload). Service control runs through a one-shot VBS that kills only the same-exe `--serve` instance (per-install precise), so multiple installs never affect each other.
 
   **Fixes**
   - **Own UI keeps working on custom ports**: the always-allowed self origin now follows the ports in `config.json` (hot-reloaded, no restart needed), and same-origin calls whose `Origin` host matches the request `Host` are always allowed. Previously the self origin was pinned to 20000/20443, so custom-port deployments got 403 on every own UI request.
