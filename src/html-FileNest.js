@@ -60,6 +60,7 @@ const DEFAULT_CONFIG = {
   allowedHosts: [],
   security: {
     requireLocalOrigin: true,
+    allowedOrigins: [],
     authToken: ''
   }
 };
