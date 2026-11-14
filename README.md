@@ -255,7 +255,7 @@ html-FileNest/
 - A: Set `allowedExtensions`, e.g. `[".pdf", ".docx", ".xlsx", ".txt"]`.
 
 **Q: API returns "origin not allowed"?**
-- A: The request's `Origin` header is not localhost. For same-origin requests from the built-in UI, this should not occur.
+- A: The request's `Origin` header is not the app's own UI origin and not registered in `security.allowedOrigins`. Register the calling site in `config.json` (full origin or bare domain - see the API Reference above); the change takes effect without restart.
 
 ## Changelog
 
@@ -263,6 +263,12 @@ html-FileNest/
 
 **New features**
 - **Caller webpage allowlist (`security.allowedOrigins`)**: the app's own UI origin (localhost/127.0.0.1 on the configured ports - default `http://127.0.0.1:20000`, `https://127.0.0.1:20443`; same-origin calls with matching `Host` are also always allowed) is always allowed and is not subject to the whitelist. The whitelist only applies to other sites - entries may be full origins (`http://192.168.1.10`) or bare domains (`192.168.1.10`); an empty list (the default) rejects every other site. `Origin: null` is always rejected. Requests with no `Origin` (curl, local scripts) are allowed as before.
+  - **One-command service restart/stop for deployed installs**: CLI commands `--restart` (stop then relaunch the service) and `--stop`, endpoint `POST /api/service-restart`, and a toolbar restart button (with confirmation and auto-reload). Service control runs through a one-shot VBS that kills only the same-exe `--serve` instance (per-install precise), so multiple installs never affect each other.
+
+  **Fixes**
+  - **Own UI keeps working on custom ports**: the always-allowed self origin now follows the ports in `config.json` (hot-reloaded, no restart needed), and same-origin calls whose `Origin` host matches the request `Host` are always allowed. Previously the self origin was pinned to 20000/20443, so custom-port deployments got 403 on every own UI request.
+  - **Restart no longer leaves the service dark**: the one-shot control VBS was written as ASCII and corrupted install paths containing non-ASCII characters (now UTF-16 LE with BOM); a relaunched instance losing the port race used to stay alive without listening - HTTP bind failure now logs and exits so the restart retries bring up a clean instance, relaunch is verified, and `restart-failed.log` is written next to the exe if all attempts fail.
+  - **Default config lists `security.allowedOrigins`**: fresh installs now generate the whitelist key in `config.json` so administrators can see the setting (runtime behavior unchanged).
 
 **v2.0.1.0**
 
@@ -340,11 +346,11 @@ Security fixes contributed by [@sucloudflare](https://github.com/sucloudflare) v
 - Image format support expanded to 17 formats (added `jpe`, `jfif`, `heic`, `heif`, `apng`).
 
 **v1.2.0**
-  - ZIP archives now open as folders in the main file list (click to enter, navigate subdirectories, preview/download inside) instead of the preview pane.
-  - ZIP contents are read-only (rename/delete/copy/move disabled) but support preview, download, and open with system handler (extracted to temp).
-  - Breadcrumb shows ZIP virtual path navigation.
+- ZIP archives now open as folders in the main file list (click to enter, navigate subdirectories, preview/download inside) instead of the preview pane.
+- ZIP contents are read-only (rename/delete/copy/move disabled) but support preview, download, and open with system handler (extracted to temp).
+- Breadcrumb shows ZIP virtual path navigation.
 
-  **v1.1.0**
+**v1.1.0**
 - Fixed AI file preview: PDF-compatible AI renders in iframe via Blob URL; PostScript AI shows system-handler prompt.
 - Fixed browser auto-downloading raw files on preview: added `Content-Disposition: inline` for non-download responses.
 - Removed 20MB file size limit for PSD/AI/Office preview.
