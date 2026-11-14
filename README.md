@@ -18,6 +18,7 @@ html-FileNest is a lightweight web-based file manager that runs locally on Windo
 - 🛡️ **Crash-Proof** — Global exception catching keeps the service alive
 - ⚡ **One-Click Deploy** — Double-click to deploy, auto-start on boot, HTTPS with self-signed certificate
 - 🗑️ **One-Click Uninstall** — `--uninstall` removes the service and certificates completely
+- 🔄 **Service Control** — `--restart` / `--stop` commands, plus a ⏻ restart button in the UI (for config/ certificate changes and upgrades)
 
 ## Architecture
 
@@ -196,6 +197,17 @@ Config values support `${VAR}` syntax for dynamic expansion:
 - **Context menu** — Right-click for Open, Preview, Reveal, Rename, Copy to…, Move to…, Delete; archive files add "Extract here" (unpack the whole archive into its own folder); files inside an archive show Preview / Download / Open with system handler
 - **Drag & drop upload** — Drag files into the window to upload
 - **Keyboard shortcuts** — `Enter` (open selected), `Delete` (delete selected), `F2` (rename), `Backspace` (up), `Alt+←/→` (back/forward), `F5` (refresh), `Ctrl+B` (collapse/expand sidebar), `Ctrl+L` (path bar), `Ctrl+Shift+N` (new folder), `Ctrl+U` (upload)
+
+## Restart / Stop the service
+
+After changing `config.json` (ports, certificates) or replacing the program, restart the service:
+
+- **UI**: click the ⏻ button at the right end of the toolbar and confirm
+- **Command line**: `html-FileNest.exe --restart` (restart) or `html-FileNest.exe --stop` (stop)
+
+Both work on the deployed copy: the old `--serve` process is stopped, then the service is
+relaunched automatically about 2 seconds later (config re-read on startup, so port and
+certificate changes take effect). No reboot or logoff needed.
 
 ## Uninstall
 

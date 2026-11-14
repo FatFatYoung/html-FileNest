@@ -239,6 +239,57 @@ function doUninstall() {
   showMsg('卸载完成', 'html-FileNest.exe 本体仍在 ' + INSTALL_DIR + '，index.html 已清理', 'Information');
 }
 
+// ============ 服务停止/重启（客户机运维入口） ============
+// 计划任务经 wscript start.vbs 拉起后 wscript 即退出，服务进程脱离任务管控
+// （schtasks /end 摸不到它）。停止/重启动作全部委托给一次性 VBS 外力执行：
+// WMI 按"同一 exe 路径 + 命令行带 --serve"精确停止，不误伤其他安装、不依赖 PID 文件；
+// 不用 PowerShell 做关键路径（客户机环境差异大，启动不稳会把重启流程做丢）。
+function serviceControlVbs(exePath, alsoRelaunch) {
+  const exe = String(exePath).replace(/"/g, '""');
+  const L = [];
+  if (alsoRelaunch) L.push('WScript.Sleep 2000');  // 等 HTTP 响应发完再动手
+  L.push('On Error Resume Next');
+  L.push('Set wmi = GetObject("winmgmts:\\\\.\\root\\cimv2")');
+  L.push("For Each p In wmi.ExecQuery(\"SELECT ProcessId, CommandLine, ExecutablePath FROM Win32_Process WHERE Name = 'html-FileNest.exe'\")");
+  L.push('  If Not p.ExecutablePath Is Nothing Then');
+  L.push('    If LCase(p.ExecutablePath) = LCase("' + exe + '") And InStr(p.CommandLine, "--serve") > 0 Then p.Terminate');
+  L.push('  End If');
+  L.push('Next');
+  if (alsoRelaunch) {
+    L.push('WScript.Sleep 1000');  // 等端口释放
+    L.push('CreateObject("WScript.Shell").Run """' + exe + '"" --serve", 0, False');
+  }
+  return L.join('\r\n') + '\r\n';
+}
+
+function runServiceControl(alsoRelaunch) {
+  const vbs = path.join(process.env.TEMP || process.env.TMP || '.',
+    'html-FileNest-service-' + (alsoRelaunch ? 'restart' : 'stop') + '-' + process.pid + '.vbs');
+  fs.writeFileSync(vbs, serviceControlVbs(process.execPath, alsoRelaunch), 'ascii');
+  if (alsoRelaunch) {
+    // 外力脚本自带"等响应->杀旧->等端口->拉起"序列，调用方立即返回即可
+    spawn('wscript.exe', [vbs], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } else {
+    spawnSync('cscript.exe', ['//Nologo', vbs], { stdio: 'ignore', windowsHide: true });
+  }
+}
+
+function doStop() {
+  runServiceControl(false);
+  console.log('html-FileNest: service stopped');
+}
+
+function doRestart() {
+  runServiceControl(true);
+  console.log('html-FileNest: service restarting');
+}
+
+// UI 入口（POST /api/service-restart）：与 --restart 同一条路径
+function serviceRestartOp(res) {
+  runServiceControl(true);
+  sendJson(res, 200, { ok: true, restarting: true });
+}
+
 // ============ 安全校验 ============
 function isLocalHostHeader(h) {
   if (!h) return false;
@@ -465,6 +516,7 @@ async function handleApi(req, res, p, q, cfg) {
 
     if (req.method === 'POST') {
       if (p === '/api/upload') return await uploadOp(req, res, q, cfg);
+      if (p === '/api/service-restart') return serviceRestartOp(res);
       // /api/write 放宽到 50MB（前端文本编辑器保存大文件，#21）；其余保持 10MB
       const body = await readBody(req, p === '/api/write' ? 50 * 1024 * 1024 : 10 * 1024 * 1024);
       const data = body ? JSON.parse(body) : {};
@@ -2571,6 +2623,8 @@ function log(s) { try { console.log('[html-FileNest] ' + s); } catch (e) {} }
 const argv = process.argv.slice(2);
 if (argv.includes('--licenses'))       console.log(THIRD_PARTY_NOTICES);
 else if (argv.includes('--serve'))     runServer();
+else if (argv.includes('--stop'))      doStop();
+else if (argv.includes('--restart'))   doRestart();
 else if (argv.includes('--uninstall')) doUninstall();
 else                                   doAuto().catch(e => {
   showMsg(APP_NAME + ' 部署失败', String(e && e.message || e), 'Error');
