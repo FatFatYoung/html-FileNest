@@ -65,7 +65,7 @@ Open `http://127.0.0.1:20000/ping` — a JSON response with `"ok": true` means e
 
 ## API Reference
 
-All API endpoints require requests from `127.0.0.1` / `localhost` (enforced by `requireLocalOrigin`).
+All API endpoints are protected by a webpage allowlist: the app homepage (`http://127.0.0.1:20000`, `https://127.0.0.1:20443`) is always allowed and is not subject to the list; other sites must be registered in `security.allowedOrigins` (full origin or bare domain); an empty list (default) rejects every other site.
 
 ### Health Check
 
@@ -146,6 +146,7 @@ Edit `C:\html-FileNest\config.json`:
   "allowedHosts": [],
   "security": {
     "requireLocalOrigin": true,
+    "allowedOrigins": [],
     "authToken": ""
   }
 }
@@ -159,6 +160,7 @@ Edit `C:\html-FileNest\config.json`:
 | `sources.*.roots` | Allowed root paths. `"*"` = all drives. Use `"C:\\Users\\me\\*"` to restrict scope |
 | `allowedExtensions` | Whitelist of allowed extensions. Empty array = no restriction |
 | `blockExecutables` | Reject executable files (default: true) |
+| `security.allowedOrigins` | Webpage allowlist for API callers. The app homepage (127.0.0.1:20000/20443) is always allowed and not subject to the list; entries are full origins (`http://192.168.1.10`) or bare domains (`192.168.1.10`); empty list (default) rejects every other site |
 | `security.requireLocalOrigin` | Only accept requests from localhost (default: true) |
 | `security.authToken` | Optional auth token for API access |
 
@@ -245,7 +247,12 @@ html-FileNest/
 
 ## Changelog
 
-**v2.0.1.0 (Latest)**
+**v2.1.0.0 (Latest)**
+
+**New features**
+- **Caller webpage allowlist (`security.allowedOrigins`)**: the app homepage (`http://127.0.0.1:20000`, `https://127.0.0.1:20443`) is always allowed and is not subject to the whitelist. The whitelist only applies to other sites - entries may be full origins (`http://192.168.1.10`) or bare domains (`192.168.1.10`); an empty list (the default) rejects every other site. `Origin: null` is always rejected. Requests with no `Origin` (curl, local scripts) are allowed as before.
+
+**v2.0.1.0**
 
 **Fixes** (security)
 - Upload names `.` / `..` are now rejected — `POST /api/upload` with `name=..` wrote the file into the *parent* directory of the target folder (CWE-22), letting a crafted upload escape the selected folder.
