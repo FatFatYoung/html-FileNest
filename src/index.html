@@ -43,8 +43,12 @@ body {
   background: var(--ok); box-shadow: 0 0 8px var(--ok);
 }
 .sidebar .list { flex: 1; overflow-y: auto; }
-/* —— 侧栏顶部：重启服务按钮（内嵌 SVG 图标，不依赖字体字形）—— */
-.sidebar-actions { padding: 10px 16px 6px; }
+/* —— 侧栏底部：重启服务按钮（上）+ 语言切换（下）（内嵌 SVG 图标，不依赖字体字形）—— */
+.sidebar-footer {
+  padding: 10px 16px 14px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 8px; flex-shrink: 0;
+}
+.sidebar-footer select.search { width: 100%; cursor: pointer; }
 .restart-btn {
   width: 100%; height: 32px; display: flex; align-items: center; justify-content: center; gap: 6px;
   border: 1px solid var(--border); background: transparent;
@@ -270,7 +274,7 @@ body {
 .sidebar { transition: width .18s ease; }
 .app.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .app.sidebar-collapsed .sidebar .logo,
-.app.sidebar-collapsed .sidebar .sidebar-actions,
+.app.sidebar-collapsed .sidebar .sidebar-footer,
 .app.sidebar-collapsed .sidebar .list { display: none; }
 /* —— 桌面模块（所有位置页，壁纸继承系统桌面）—— */
   /* 框选（橡皮筋） */
@@ -290,10 +294,13 @@ body {
 <div class="app" id="app">
   <aside class="sidebar">
     <div class="logo"><span class="dot"></span>html-FileNest</div>
-    <div class="sidebar-actions"><button class="restart-btn" id="btn-restart" title="重启服务" data-i18n-title="重启服务"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span data-i18n="重启服务">重启服务</span></button></div>
     <div class="list" id="tree-container">
       <div class="section-title" data-i18n="目录树">目录树</div>
       <div id="tree"></div>
+    </div>
+    <div class="sidebar-footer">
+      <button class="restart-btn" id="btn-restart" title="重启服务" data-i18n-title="重启服务"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span data-i18n="重启服务">重启服务</span></button>
+      <select class="search" id="lang-switch" title="语言 / Language"><option value="zh">中文简体</option><option value="en">English</option></select>
     </div>
   </aside>
   <main class="main">
@@ -316,7 +323,6 @@ body {
       <button class="btn" id="btn-group" title="按类型分组显示" data-i18n-title="按类型分组显示" data-i18n="分组">分组</button>
       <button class="btn" id="btn-new" title="新建（文件夹 / 文件类型）" data-i18n-title="新建（文件夹 / 文件类型）" data-i18n="新建 ▾">新建 ▾</button>
       <button class="btn primary" id="btn-upload" title="上传文件 (Ctrl+U)" data-i18n-title="上传文件 (Ctrl+U)" data-i18n="上传">上传</button>
-      <select class="search" id="lang-switch" title="语言 / Language" style="max-width:92px"><option value="zh">中文简体</option><option value="en">English</option></select>
     </header>
     <div class="file-list grid-view" id="file-list"></div>
     <footer class="statusbar">
