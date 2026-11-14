@@ -299,7 +299,7 @@ body {
     </div>
     <div class="sidebar-footer">
       <button class="footer-btn" id="btn-restart" title="重启服务" data-i18n-title="重启服务"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span data-i18n="重启服务">重启服务</span></button>
-      <button class="footer-btn" id="lang-switch" title="语言 / Language">English</button>
+      <button class="footer-btn" id="lang-switch" title="语言 / Language"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span id="lang-switch-text">English</span></button>
     </div>
   </aside>
   <main class="main">
@@ -551,7 +551,7 @@ body {
     for (var i = 0; i < els.length; i++) els[i].placeholder = tr(els[i].getAttribute('data-i18n-ph'));
     var sd = document.getElementById('btn-sort-dir');
     if (sd) sd.textContent = state.sortAsc ? tr('↑ 升序') : tr('↓ 降序');
-    var ls = document.getElementById('lang-switch');
+    var ls = document.getElementById('lang-switch-text');
     if (ls) ls.textContent = (LANG === 'zh') ? 'English' : '中文简体';
   }
   function setLang(l) {
@@ -2580,7 +2580,8 @@ body {
   (function () {
     var btn = $('lang-switch');
     if (!btn) return;
-    btn.textContent = (LANG === 'zh') ? 'English' : '中文简体';
+    var txt = $('lang-switch-text');
+    if (txt) txt.textContent = (LANG === 'zh') ? 'English' : '中文简体';
     btn.onclick = function () { setLang(LANG === 'zh' ? 'en' : 'zh'); };
   })();
   applyI18n();
