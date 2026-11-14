@@ -318,6 +318,12 @@ function requestOriginAllowed(req) {
   const o = req.headers.origin;
   if (o) {
     if (isSelfOrigin(o)) return true;
+    // 自源补充判定：Origin 与请求 Host 一致 = 同源 UI 自调用。
+    // 客户改端口后 Origin 端口不再是固定默认值，光认 20000/20443 会把自家 UI 的请求拒掉；
+    // Host 由浏览器按目标 URL 生成（禁止头），跨站伪造不了，安全面不受影响。
+    try {
+      if (new URL(o).host.toLowerCase() === String(req.headers.host || '').toLowerCase()) return true;
+    } catch (e) {}
     const t = normalizeOrigin(o);
     if (!t) return false;
     const list = (loadConfig().security || {}).allowedOrigins;
