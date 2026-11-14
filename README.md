@@ -263,13 +263,7 @@ html-FileNest/
 
 **New features**
 - **Caller webpage allowlist (`security.allowedOrigins`)**: the app's own UI origin (localhost/127.0.0.1 on the configured ports - default `http://127.0.0.1:20000`, `https://127.0.0.1:20443`; same-origin calls with matching `Host` are also always allowed) is always allowed and is not subject to the whitelist. The whitelist only applies to other sites - entries may be full origins (`http://192.168.1.10`) or bare domains (`192.168.1.10`); an empty list (the default) rejects every other site. `Origin: null` is always rejected. Requests with no `Origin` (curl, local scripts) are allowed as before.
-  - **One-command service restart/stop for deployed installs**: CLI commands `--restart` (stop then relaunch the service) and `--stop`, endpoint `POST /api/service-restart`, and a restart button at the bottom of the left sidebar (with icon, label, confirmation and auto-reload). Service control runs through a one-shot VBS that kills only the same-exe `--serve` instance (per-install precise), so multiple installs never affect each other.
-  - **Sidebar-bottom language toggle**: the language switcher moves from the toolbar dropdown to a globe-icon toggle button at the bottom of the left sidebar (next to the restart button); it shows the target language (`English` in the Chinese UI, `中文简体` in the English UI) and switches with one click.
-
-  **Fixes**
-  - **Own UI keeps working on custom ports**: the always-allowed self origin now follows the ports in `config.json` (hot-reloaded, no restart needed), and same-origin calls whose `Origin` host matches the request `Host` are always allowed. Previously the self origin was pinned to 20000/20443, so custom-port deployments got 403 on every own UI request.
-  - **Restart no longer leaves the service dark**: the one-shot control VBS was written as ASCII and corrupted install paths containing non-ASCII characters (now UTF-16 LE with BOM); a relaunched instance losing the port race used to stay alive without listening - HTTP bind failure now logs and exits so the restart retries bring up a clean instance, relaunch is verified, and `restart-failed.log` is written next to the exe if all attempts fail.
-  - **Default config lists `security.allowedOrigins`**: fresh installs now generate the whitelist key in `config.json` so administrators can see the setting (runtime behavior unchanged).
+- **One-command service restart/stop for deployed installs**: CLI commands `--restart` (stop then relaunch the service) and `--stop`, endpoint `POST /api/service-restart`, and a restart button at the bottom of the left sidebar (with icon, label, confirmation and auto-reload). Service control runs through a one-shot VBS that kills only the same-exe `--serve` instance (per-install precise), so multiple installs never affect each other.
 
 **v2.0.1.0**
 
