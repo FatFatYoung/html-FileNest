@@ -26,7 +26,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '2.0.1.0';
+const SERVICE_VER = '2.1.0.0';
 const HOST        = '127.0.0.1';
 const INSTALL_DIR = 'C:\\html-FileNest';
 const EXE_PATH    = path.join(INSTALL_DIR, 'html-FileNest.exe');
@@ -100,6 +100,7 @@ function normalizeConfig(cfg) {
   c.allowedHosts = c.allowedHosts || [];
   c.security = c.security || {};
   if (c.security.requireLocalOrigin === undefined) c.security.requireLocalOrigin = true;
+  if (!Array.isArray(c.security.allowedOrigins)) c.security.allowedOrigins = [];
   c.security.authToken = c.security.authToken || '';
 
   // ${ENV} 展开加白名单（#23）：仅预定义安全变量可展开，未知变量按空串处理，防环境变量值泄露
@@ -247,19 +248,36 @@ function isLocalHostHeader(h) {
   const parts = s.split(':');
   return parts[0] === '127.0.0.1' || parts[0] === 'localhost';
 }
-function isLocalOrigin(o) {
-  if (!o) return true;
+function normalizeOrigin(o) {
+  try { return new URL(o).origin; } catch (e) { return ''; }
+}
+// 应用主页恒放行，不参与白名单：http://127.0.0.1:20000、https://127.0.0.1:20443（含 localhost/::1）
+function isSelfOrigin(o) {
   try {
     const u = new URL(o);
     const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    return h === '127.0.0.1' || h === 'localhost' || h === '::1';
+    if (h !== '127.0.0.1' && h !== 'localhost' && h !== '::1') return false;
+    return (u.protocol === 'http:' && u.port === '20000') || (u.protocol === 'https:' && u.port === '20443');
   } catch (e) { return false; }
 }
-// If Origin is present it must be local. Without Origin (e.g. cross-site <img>/<script>),
-// fall back to Sec-Fetch-Site. Clients sending neither (curl, local scripts) are allowed.
+// 调用网页白名单：主页恒放行；只对其他站点生效，空名单默认全禁止；
+// 条目可写完整 Origin（http://192.168.1.10）或域名（192.168.1.10）；Origin: null 一律拒。
+// 无 Origin 的请求（curl、本地脚本）与 v2.0.1.0 一致放行；浏览器 Sec-Fetch-Site: cross-site 拒绝。
 function requestOriginAllowed(req) {
   const o = req.headers.origin;
-  if (o) return isLocalOrigin(o);
+  if (o) {
+    if (isSelfOrigin(o)) return true;
+    const t = normalizeOrigin(o);
+    if (!t) return false;
+    const list = (loadConfig().security || {}).allowedOrigins;
+    if (!Array.isArray(list) || list.length === 0) return false;
+    let host = '';
+    try { host = new URL(t).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch (e) {}
+    return list.some(e => {
+      const s = String(e || '').trim().toLowerCase();
+      return !!s && (normalizeOrigin(s) === t || s === host);
+    });
+  }
   const site = req.headers['sec-fetch-site'];
   return !site || site === 'same-origin' || site === 'none';
 }
@@ -290,7 +308,7 @@ function runServer() {
 function handleRequest(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  if (req.headers.origin && isLocalOrigin(req.headers.origin)) {
+  if (req.headers.origin && requestOriginAllowed(req)) {
     res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
     res.setHeader('Vary', 'Origin');
   }

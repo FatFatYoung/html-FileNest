@@ -1,6 +1,6 @@
 {
   "name": "html-FileNest",
-  "version": "2.0.1.0",
+  "version": "2.1.0.0",
   "dependencies": {
     "jszip": "3.10.2",
     "mammoth": "1.13.0",
