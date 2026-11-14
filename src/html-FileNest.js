@@ -1737,6 +1737,15 @@ async function mkfileOp(res, data, cfg) {
     throw new Error('invalid file name');
   }
   const full = resolveAllowedPath(path.win32.join(dir, name), cfg);
+  // —— 新建菜单"快捷方式"专用流：仅允许 .lnk 且带用户指定目标（其余 .lnk 写路径仍被扩展名策略拦截） ——
+  const shortcutTarget = data.shortcutTarget ? String(data.shortcutTarget).trim() : '';
+  if (shortcutTarget) {
+    if (path.win32.extname(name).toLowerCase() !== '.lnk') return sendJson(res, 400, { ok: false, error: 'shortcut must be .lnk' });
+    if (shortcutTarget.length > 2000 || /[\x00-\x1f]/.test(shortcutTarget)) return sendJson(res, 400, { ok: false, error: 'invalid shortcut target' });
+    if (fs.existsSync(full)) return sendJson(res, 409, { ok: false, error: 'file exists' });
+    await createShortcutLnk(full, shortcutTarget);
+    return sendJson(res, 200, { ok: true, path: full });
+  }
   const extCheck = checkExtension(full, cfg);
   if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   // —— 与 Windows 同源：按 ShellNew 注册的创建方式生成新文件（模板拷贝/初始数据/创建命令/空文件），绝不覆盖已存在文件 ——
@@ -1799,6 +1808,22 @@ async function createViaShellNewCommand(commandLine, fullPath) {
   await fs.promises.writeFile(fullPath, '', { flag: 'wx' }).catch(() => {});   // 兜底：空文件
 }
 
+async function createShortcutLnk(fullPath, target) {
+  // WScript.Shell COM 生成真正的 .lnk；脚本经 -EncodedCommand 传递（UTF-16LE base64），
+  // 目标字符串只做 PS 单引号转义，不经过任何 shell 解析，杜绝命令注入面。
+  const esc = (s) => String(s).replace(/'/g, "''");
+  const script = "$ErrorActionPreference='Stop'\n"
+    + "$w=New-Object -ComObject WScript.Shell\n"
+    + "$sc=$w.CreateShortcut('" + esc(fullPath) + "')\n"
+    + "$sc.TargetPath='" + esc(target) + "'\n"
+    + "$sc.Save()";
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+    { stdout: 'ignore', stderr: 'ignore' });
+  await proc.exited;
+  if (!fs.existsSync(fullPath)) throw new Error('shortcut create failed');
+}
+
 // —— Windows 右键"新建"菜单的文件类型（注册表 ShellNew，与桌面右键菜单同源） ——
 // v2.1.0.1：补全 Windows 实际查找的全部注册位置——
 //   ① .ext\ShellNew 顶层；② .ext\<ProgID>\ShellNew 嵌套层（Office/WPS/压缩文件夹的标准注册位）；
@@ -1813,50 +1838,58 @@ async function getNewFileTypes() {
 
 const SHELLNEW_QUERY_PS = String.raw`
 $ErrorActionPreference = 'SilentlyContinue'
-$items = New-Object System.Collections.Generic.List[object]
-$script:shlLoaded = $false
-
-function Resolve-FriendlyName($cl, $ext, $progId, $raw) {
-  $name = $null
-  if ($raw) {
-    if ($raw.StartsWith('@')) {
-      try {
-        if (-not $script:shlLoaded) {
-          Add-Type -Namespace FN -Name SH -MemberDefinition '[DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] public static extern int SHLoadIndirectString(string s, System.Text.StringBuilder b, uint c, IntPtr r);' | Out-Null
-          $script:shlLoaded = $true
-        }
-        $sb = New-Object System.Text.StringBuilder 512
-        if (([FN.SH]::SHLoadIndirectString($raw, $sb, 512, [IntPtr]::Zero)) -ge 0 -and $sb.Length -gt 0) { $name = $sb.ToString() }
-      } catch { }
-    } else { $name = $raw }
-  }
-  if ((-not $name) -and $progId) {
-    $pk = $cl.OpenSubKey($progId)
-    if (-not $pk) { $pk = $cl.OpenSubKey($ext + '\' + $progId) }
-    if ($pk) {
-      $nm = [string]$pk.GetValue('')
-      if (-not $nm) { $nm = [string]$pk.GetValue('FriendlyTypeName') }
-      $pk.Close()
-      if ($nm) {
-        if ($nm.StartsWith('@')) {
-          try {
-            $sb = New-Object System.Text.StringBuilder 512
-            if (([FN.SH]::SHLoadIndirectString($nm, $sb, 512, [IntPtr]::Zero)) -ge 0 -and $sb.Length -gt 0) { $name = $sb.ToString() }
-          } catch { }
-        } else { $name = $nm }
-      }
-    }
-  }
-  if (-not $name) { $name = $ext }
-  $name
+if (-not ('SnNew.SH' -as [type])) {
+  Add-Type -Namespace SnNew -Name SH -MemberDefinition @'
+[DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] public static extern int SHLoadIndirectString(string s, System.Text.StringBuilder b, uint c, IntPtr r);
+[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, out SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+[DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
+public struct SHFILEINFO { public IntPtr hIcon; public int iIcon; public uint dwAttributes; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName; }
+'@
 }
+if (-not ('System.Drawing.Icon' -as [type])) { Add-Type -AssemblyName System.Drawing | Out-Null }
+
+function Res2([string]$s) {
+  if (-not $s) { return '' }
+  if ($s.StartsWith('@')) {
+    try {
+      $sb = New-Object System.Text.StringBuilder 512
+      if (([SnNew.SH]::SHLoadIndirectString($s, $sb, 512, [IntPtr]::Zero)) -ge 0 -and $sb.Length -gt 0) { return $sb.ToString() }
+    } catch { }
+    return ''
+  }
+  return $s
+}
+function Strip-Accel([string]$s) {
+  if (-not $s) { return '' }
+  return ($s -replace '\s*\(\&[^\)]*\)', '').Trim()
+}
+function Get-IconB64([string]$ext) {
+  try {
+    $info = New-Object SnNew.SH+SHFILEINFO
+    $flags = [uint32]0x110   # SHGFI_ICON | SHGFI_USEFILEATTRIBUTES (LARGE)
+    $h = [SnNew.SH]::SHGetFileInfo(('x' + $ext), [uint32]0x80, [ref]$info, [uint32]([System.Runtime.InteropServices.Marshal]::SizeOf($info)), $flags)
+    if ($h -eq [IntPtr]::Zero -or $info.hIcon -eq [IntPtr]::Zero) { return '' }
+    $ic = [System.Drawing.Icon]::FromHandle($info.hIcon)
+    $bmp = $ic.ToBitmap()
+    $ms = New-Object System.IO.MemoryStream
+    $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+    $b64 = [Convert]::ToBase64String($ms.ToArray())
+    $bmp.Dispose(); $ic.Dispose()
+    [void][SnNew.SH]::DestroyIcon($info.hIcon)
+    return $b64
+  } catch { return '' }
+}
+
+$items = New-Object System.Collections.Generic.List[object]
+$extDef = @{}    # ext -> default ProgID（跨根去重，优先非空）
 
 function Add-SnEntry($cl, $sn, $ext, $progId, $prio) {
   $vFile = $sn.GetValue('FileName')
   $vData = $sn.GetValue('Data')
   $vNull = $sn.GetValue('NullFile')
   $vCmd  = $sn.GetValue('Command')
-  $kind = $null; $template = $null; $data = $null; $command = $null
+  $vHand = $sn.GetValue('Handler')
+  $kind = 'none'; $template = $null; $data = $null; $command = $null
   if ($vFile) {
     $kind = 'template'; $template = [string]$vFile
   } elseif ($null -ne $vData) {
@@ -1865,15 +1898,36 @@ function Add-SnEntry($cl, $sn, $ext, $progId, $prio) {
     else { $data = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$vData)) }
   } elseif ($null -ne $vNull) {
     $kind = 'null'
+  } elseif ($vHand) {
+    $kind = 'handler'
   } elseif ($vCmd) {
     $kind = 'command'; $command = [string]$vCmd
-  } else { return }
-  $rawName = [string]$sn.GetValue('ItemName')
-  if (-not $rawName) { $rawName = [string]$sn.GetValue('MenuText') }
+  }
+  $itemName = Res2 ([string]$sn.GetValue('ItemName'))
+  $menuText = Strip-Accel (Res2 ([string]$sn.GetValue('MenuText')))
+  # 名称链条（与 Windows 菜单逐字一致）：类型友好名 FriendlyTypeName → MenuText → ProgID 默认值 → ItemName → 扩展名
+  $friendly = ''
+  if ($progId) {
+    $pk = $cl.OpenSubKey($progId)
+    if (-not $pk) { $pk = $cl.OpenSubKey($ext + '\' + $progId) }
+    if ($pk) {
+      $ftn = [string]$pk.GetValue('FriendlyTypeName')
+      if (-not $ftn) { $ftn = [string]$pk.GetValue('') }
+      $friendly = Res2 $ftn
+      $pd = Res2 ([string]$pk.GetValue(''))
+      $pk.Close()
+    }
+  }
+  $name = $friendly
+  if (-not $name) { $name = $menuText }
+  if (-not $name) { $name = $pd }
+  if (-not $name) { $name = $itemName }
+  if (-not $name) { $name = $ext }
   $items.Add([PSCustomObject]@{
     ext = $ext; progId = $progId; prio = $prio; kind = $kind
     template = $template; data = $data; command = $command
-    name = (Resolve-FriendlyName $cl $ext $progId $rawName)
+    itemName = $itemName; menuText = $menuText
+    hasHandler = [bool]$vHand; name = $name
   })
 }
 
@@ -1894,51 +1948,66 @@ foreach ($hv in $hives) {
     } catch { }
   }
 }
+# 第一遍：收集扩展名 → 默认 ProgID；第二遍：枚举 ShellNew（含 ProgID 根层 <ProgID>\ShellNew）
 foreach ($cl in $roots) {
   foreach ($n in $cl.GetSubKeyNames()) {
     if (-not $n.StartsWith('.')) { continue }
     $ek = $cl.OpenSubKey($n)
     if (-not $ek) { continue }
     $prog = [string]$ek.GetValue('')
+    if ($prog -and (-not $extDef.ContainsKey($n))) { $extDef[$n] = $prog }
     $sn = $ek.OpenSubKey('ShellNew')
     if ($sn) { Add-SnEntry $cl $sn $n $prog 0; $sn.Close() }
     foreach ($sub in $ek.GetSubKeyNames()) {
+      if ($sub -eq 'ShellNew') { continue }
       $sn2 = $ek.OpenSubKey($sub + '\ShellNew')
       if ($sn2) { Add-SnEntry $cl $sn2 $n $sub 1; $sn2.Close() }
+      foreach ($sub2 in $ek.OpenSubKey($sub).GetSubKeyNames()) {
+        if ($sub2 -eq 'ShellNew') { continue }
+        $sn3 = $ek.OpenSubKey($sub + '\' + $sub2 + '\ShellNew')
+        if ($sn3) { Add-SnEntry $cl $sn3 $n ($sub + '\' + $sub2) 2; $sn3.Close() }
+      }
     }
     $ek.Close()
   }
 }
-
-$best = @{}
-foreach ($it in $items) {
-  $k = $it.ext.ToLower()
-  $score = 0
-  if ($it.kind -eq 'template') { $score = 4 }
-  elseif ($it.kind -eq 'data') { $score = 3 }
-  elseif ($it.kind -eq 'null') { $score = 2 }
-  elseif ($it.kind -eq 'command') { $score = 1 }
-  $rank = $score * 10 + (2 - $it.prio)
-  if ((-not $best.ContainsKey($k)) -or ($rank -gt $best[$k].rank)) { $best[$k] = @{ rank = $rank; it = $it } }
-}
-try {
-  $ck = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\Discardable\PostSetup\ShellNew')
-  $cache = $ck.GetValue('Classes')
-  $ck.Close()
-  foreach ($c in $cache) {
-    if ($c -and $c.StartsWith('.') -and (-not $best.ContainsKey($c.ToLower()))) {
-      $ek = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey($c)
-      $prog = ''
-      if ($ek) { $prog = [string]$ek.GetValue(''); $ek.Close() }
-      $best[$c.ToLower()] = @{ rank = 1; it = [PSCustomObject]@{ ext = $c; kind = 'null'; template = $null; data = $null; command = $null; name = (Resolve-FriendlyName ([Microsoft.Win32.Registry]::ClassesRoot) $c $prog '') } }
+foreach ($cl in $roots) {
+  foreach ($n in $cl.GetSubKeyNames()) {
+    if ($n.StartsWith('.')) { continue }
+    $sn = $cl.OpenSubKey($n + '\ShellNew')
+    if (-not $sn) { continue }
+    $sn.Close()
+    foreach ($e in $extDef.Keys) {
+      if ($extDef[$e] -eq $n) { $sn2 = $cl.OpenSubKey($n + '\ShellNew'); if ($sn2) { Add-SnEntry $cl $sn2 $e $n 0; $sn2.Close() } }
     }
   }
-} catch { }
+}
+
+# 每扩展名取最优注册：默认 ProgID 优先 > 创建方式（模板>数据>空>Handler>命令>无） > 顶层优先
+$best = @{}
+$scoreMap = @{ template = 5; data = 4; null = 3; handler = 2; command = 1; none = 0 }
+foreach ($it in $items) {
+  $k = $it.ext.ToLower()
+  $def = $extDef[$it.ext]
+  $defRank = 0
+  if ($def -and ($it.progId -ieq $def)) { $defRank = 1 }
+  $rank = $defRank * 1000 + $scoreMap[$it.kind] * 10 + (2 - $it.prio)
+  if ((-not $best.ContainsKey($k)) -or ($rank -gt $best[$k].rank)) { $best[$k] = @{ rank = $rank; it = $it } }
+}
+
 $out = New-Object System.Collections.Generic.List[object]
 foreach ($k in ($best.Keys | Sort-Object)) {
   $it = $best[$k].it
-  if ($it.ext -ieq '.lnk') { continue }
-  $out.Add([PSCustomObject]@{ ext = $it.ext.ToLower(); name = $it.name; kind = $it.kind; template = $it.template; data = $it.data; command = $it.command })
+  $def = $extDef[$it.ext]
+  # —— Windows 菜单过滤规律（与桌面右键菜单逐项实证） ——
+  if (-not $def) { continue }                                             # ① 无默认 ProgID 的类型不进菜单（如 .contact）
+  if ($it.kind -eq 'command' -or $it.kind -eq 'none') { continue }         # ② 无文件创建机制的注册不进菜单
+  if ($it.hasHandler -and (-not $it.itemName) -and (-not $it.menuText)) { continue }  # ③ Handler 类注册必须带标签源（如 .library-ms）
+  $out.Add([PSCustomObject]@{
+    ext = $it.ext.ToLower(); name = $it.name; kind = $it.kind
+    template = $it.template; data = $it.data; command = $it.command
+    icon = (Get-IconB64 $it.ext)
+  })
 }
 $out | ConvertTo-Json -Compress
 `;
@@ -1958,13 +2027,14 @@ async function queryShellNewTypes() {
       template: x.template || null,
       data: x.data || null,
       command: x.command || null,
+      icon: typeof x.icon === 'string' && /^[A-Za-z0-9+/=]+$/.test(x.icon) ? x.icon : '',
     }))
     .sort((a, b) => a.ext.localeCompare(b.ext));
 }
 
 async function newfileTypesOp(res) {
   const types = await getNewFileTypes();
-  sendJson(res, 200, { ok: true, types: types.map(t => ({ ext: t.ext, name: t.name })) });
+  sendJson(res, 200, { ok: true, types: types.map(t => ({ ext: t.ext, name: t.name, icon: t.icon || '' })) });
 }
 
 // —— 我的收藏（持久化到安装目录 favorites.json） ——

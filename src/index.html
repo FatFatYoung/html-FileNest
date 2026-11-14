@@ -2115,6 +2115,19 @@ body {
     if (!state.current || state.current.path === '*' || state.current.path === '*fav*' || state.current.path === '*recycle*' || state.current.path === '*search*') {
       showToast(tr('请先打开一个文件夹'), 'error'); return;
     }
+    if (t.ext === '.lnk') {
+      openModal(tr('新建快捷方式（文件名）'), tr('新建快捷方式') + '.lnk').then(function (name) {
+        if (!name) return;
+        if (name.toLowerCase().slice(-4) !== '.lnk') name = name + '.lnk';
+        openModal(tr('快捷方式目标（文件/文件夹路径或网址）'), '').then(function (target) {
+          if (!target) return;
+          apiPost('/api/mkfile', { path: state.current.path, name: name, shortcutTarget: target })
+            .then(reload)
+            .catch(function (e) { showToast(tr('创建失败: ') + e.message, 'error'); });
+        });
+      });
+      return;
+    }
     openModal(tr('新建') + t.name, tr('新建') + t.name + t.ext).then(function (name) {
       if (!name) return;
       var ext = t.ext.toLowerCase();
@@ -2140,10 +2153,20 @@ body {
       d.onclick = function (e) { e.stopPropagation(); hideNewMenu(); fn(); };
       newMenuEl.appendChild(d);
     }
+    function typeIcon(t) {
+      if (t.icon && /^[A-Za-z0-9+/=]+$/.test(t.icon)) {
+        return '<img style="width:16px;height:16px;vertical-align:-3px" src="data:image/png;base64,' + t.icon + '">';
+      }
+      return '📄';
+    }
     item(tr('文件夹'), '📁', doMkdir);
     if (newTypes && newTypes.length) {
-      newTypes.forEach(function (t) {
-        item(t.name + ' (' + t.ext + ')', '📄', function () { doMkfile(t); });
+      // 与 Windows 菜单同序：文件夹 → 快捷方式 → 其余按扩展名；标签用类型友好名（不带扩展名后缀）
+      var lnk = null, rest = [];
+      newTypes.forEach(function (t) { if (t.ext === '.lnk') lnk = t; else rest.push(t); });
+      if (lnk) item(lnk.name, typeIcon(lnk), function () { doMkfile(lnk); });
+      rest.forEach(function (t) {
+        item(t.name, typeIcon(t), function () { doMkfile(t); });
       });
     } else {
       item(tr('类型加载中…'), '⏳', function () {});

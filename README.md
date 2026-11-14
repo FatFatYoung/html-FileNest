@@ -262,10 +262,13 @@ html-FileNest/
 **v2.1.0.1 (Latest)**
 
 **Fixes**
-- "New" menu no longer drops file types that Windows' own right-click "New" menu offers. The `ShellNew` registry lookup now covers every registration location Windows itself consults - the top-level `.ext\ShellNew` key, the nested `.ext\<ProgID>\ShellNew` key (the standard registration spot for Office/WPS documents and compressed folders, e.g. `.docx\Word.Document.12\ShellNew`), the 32-bit (WOW64) registry view used by 32-bit applications such as WPS, every loaded user's `Software\Classes` hive, and the Explorer New-menu cache as a last resort. Types registered with a creation `Command` no longer disappear from the menu either. Display names resolve like Windows' (indirect resource strings included).
+- The "New" menu now matches Windows' own right-click "New" menu exactly, item by item. The `ShellNew` registry lookup covers every registration location Windows consults - the top-level `.ext\ShellNew` key, the nested `.ext\<ProgID>\ShellNew` key (the standard registration spot for Office/WPS documents and compressed folders, e.g. `.docx\Word.Document.12\ShellNew`), the 32-bit (WOW64) registry view used by 32-bit applications such as WPS, every loaded user's `Software\Classes` hive, and the Explorer New-menu cache as a fallback - and items Windows leaves out stay out: types without a default `ProgID`, registrations without a file-creation mechanism, and handler-based registrations without a label source (e.g. Library Folder) are filtered exactly like Explorer does.
+- Menu labels now read exactly like Windows': the file type's friendly name (`FriendlyTypeName`, indirect resource strings resolved), no "(.ext)" suffix, sorted the Windows way (folder, shortcut, then by extension). Previously the ShellNew `ItemName` string was shown instead, which never matches the Explorer menu text.
+- New files are now created exactly the way Windows creates them, per the type's `ShellNew` registration: template copy (`FileName`), initial content (`Data`), creation command (`Command`, run with `%1` = the new file path), or empty file (`NullFile`). Previously every new file was created empty regardless of type.
 
 **Improvements**
-- New files are now created exactly the way Windows creates them, per the type's `ShellNew` registration: template copy (`FileName`), initial content (`Data`), creation command (`Command`, run with `%1` = the new file path), or empty file (`NullFile`). Previously every new file was created empty regardless of type.
+- "New" menu entries carry the real Windows file type icons.
+- "Shortcut" (`.lnk`) is now offered in the "New" menu and creates a real shortcut (target dialog, `WScript.Shell`); the executable/`.lnk` write block stays in force for every other path.
 
 **v2.1.0.0**
 
