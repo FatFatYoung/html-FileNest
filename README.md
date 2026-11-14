@@ -259,7 +259,15 @@ html-FileNest/
 
 ## Changelog
 
-**v2.1.0.0 (Latest)**
+**v2.1.0.1 (Latest)**
+
+**Fixes**
+- "New" menu no longer drops file types that Windows' own right-click "New" menu offers. The `ShellNew` registry lookup now covers every registration location Windows itself consults - the top-level `.ext\ShellNew` key, the nested `.ext\<ProgID>\ShellNew` key (the standard registration spot for Office/WPS documents and compressed folders, e.g. `.docx\Word.Document.12\ShellNew`), the 32-bit (WOW64) registry view used by 32-bit applications such as WPS, every loaded user's `Software\Classes` hive, and the Explorer New-menu cache as a last resort. Types registered with a creation `Command` no longer disappear from the menu either. Display names resolve like Windows' (indirect resource strings included).
+
+**Improvements**
+- New files are now created exactly the way Windows creates them, per the type's `ShellNew` registration: template copy (`FileName`), initial content (`Data`), creation command (`Command`, run with `%1` = the new file path), or empty file (`NullFile`). Previously every new file was created empty regardless of type.
+
+**v2.1.0.0**
 
 **New features**
 - **Caller webpage allowlist (`security.allowedOrigins`)**: the app's own UI origin (localhost/127.0.0.1 on the configured ports - default `http://127.0.0.1:20000`, `https://127.0.0.1:20443`; same-origin calls with matching `Host` are also always allowed) is always allowed and is not subject to the whitelist. The whitelist only applies to other sites - entries may be full origins (`http://192.168.1.10`) or bare domains (`192.168.1.10`); an empty list (the default) rejects every other site. `Origin: null` is always rejected. Requests with no `Origin` (curl, local scripts) are allowed as before.
