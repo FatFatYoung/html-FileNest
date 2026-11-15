@@ -213,8 +213,10 @@ async function install() {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf8');
   }
   // UV_THREADPOOL_SIZE=64：fs 线程池默认 4 线程，被慢盘/死 UNC 占满时目录枚举整体卡死
-  // （2026-11-15 卡顿根因之一）；内容有变时重写 start.vbs，旧部署升级后自动换新
-  const vbsBody = 'CreateObject("WScript.Shell").Run "cmd /c set UV_THREADPOOL_SIZE=64 && """' + EXE_PATH + '"" --serve", 0, False\r\n';
+  // （2026-11-15 卡顿根因之一）；内容有变时重写 start.vbs，旧部署升级后自动换新。
+  // VBS 引号：字符串内嵌引号用 ""（且不闭合外层字符串）；2026-11-15 曾误用 """ 在此
+  // 处提前闭合字符串导致 exe 路径裸露、800A0401"语句未结束"，cscript 实测后修正
+  const vbsBody = 'CreateObject("WScript.Shell").Run "cmd /c set UV_THREADPOOL_SIZE=64 && ""' + EXE_PATH + '"" --serve", 0, False\r\n';
   try {
     if (!fs.existsSync(VBS_PATH) || fs.readFileSync(VBS_PATH, 'ascii') !== vbsBody) {
       fs.writeFileSync(VBS_PATH, vbsBody, 'ascii');
