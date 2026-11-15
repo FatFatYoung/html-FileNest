@@ -994,6 +994,7 @@ body {
       if (state.current && state.current.path === '*' && d.path &&
           !state.items.some(function (i) { return i._desktop; })) {
         state.items.push(desktopEntry());
+        state._viewCache = null;   // items 已变但引用未换，不失效会命中旧缓存把新项滤掉（2026-11-16 桌面入口不显示修复）
         render();
       }
     }).catch(function () {
