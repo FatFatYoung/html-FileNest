@@ -570,10 +570,10 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/roots')  return listRoots(res, cfg);
       if (p === '/api/drives') return listDrives(res);
       if (p === '/api/desktop') return await desktopInfo(res, cfg);
-      if (p === '/api/ls')     return await listDir(res, q, cfg);
+      if (p === '/api/ls')     return await listDir(req, res, q, cfg);
       if (p === '/api/newfile-types') return await newfileTypesOp(res);
       if (p === '/api/favorites') return await favoritesListOp(res);
-      if (p === '/api/search')  return await searchOp(res, q, cfg);
+      if (p === '/api/search')  return await searchOp(req, res, q, cfg);
       if (p === '/api/recycle') return await recycleListOp(res);
       if (p === '/api/stat')   return await statPath(res, q, cfg);
       if (p === '/api/raw')    return await streamFile(req, res, q, cfg);
@@ -592,7 +592,7 @@ async function handleApi(req, res, p, q, cfg) {
       const data = body ? JSON.parse(body) : {};
       if (p === '/api/mkdir')  return await mkdirOp(res, data, cfg);
       if (p === '/api/mkfile') return await mkfileOp(res, data, cfg);
-      if (p === '/api/stat-batch') return await statBatchOp(res, data, cfg);
+      if (p === '/api/stat-batch') return await statBatchOp(req, res, data, cfg);
       if (p === '/api/favorites') return await favoritesAddOp(res, data, cfg);
       if (p === '/api/unfavorite') return await unfavoriteOp(res, data);
       if (p === '/api/rename') return await renameOp(res, data, cfg);
@@ -907,8 +907,11 @@ async function desktopInfo(res, cfg) {
 }
 
 
-async function listDir(res, q, cfg) {
+async function listDir(req, res, q, cfg) {
   const dir = resolveAllowedPath(q.path, cfg);
+  // 客户端已断开（AbortController）则放弃剩余处理：否则旧请求跑完才放行新
+  // 请求，快速进/返回时服务端排队塞车（2026-11-15）
+  const dead = () => !!(req && req.signal && req.signal.aborted);
   // fast=1 两阶段快路径：只用 readdir 自带类型零 stat 秒回，size/mtime 由前端
   // 经 /api/stat-batch 分批补齐（2026-11-15 大目录"先进再流式"优化）
   const fast = q.fast === '1' || q.fast === 'true';
@@ -933,7 +936,9 @@ async function listDir(res, q, cfg) {
   if ((cfg.deniedPaths || []).length) {
     try { realDir = path.win32.normalize(fs.realpathSync(dir)).replace(/[\\\/]+$/, ''); } catch (e) {}
   }
+  let _n = 0;
   for (const ent of ents) {
+    if ((++_n & 255) === 0 && dead()) return;   // 每 256 条检查一次客户端是否已放弃
     const full = path.win32.join(dir, ent.name);
     const link = ent.isSymbolicLink();
     if (isDenied(full, cfg, link || !realDir ? undefined : realDir + '\\' + ent.name)) continue;
@@ -1013,6 +1018,7 @@ async function statBatchOp(res, data, cfg) {
   };
   const realCache = new Map();
   const out = await Promise.all(paths.map(async (p) => {
+    if (req && req.signal && req.signal.aborted) return null;   // 客户端已放弃
     try {
       const full = resolveAllowedPath(p, cfg);
       if (hit(nkey(full))) return null;
@@ -2415,7 +2421,7 @@ async function recycleEmptyOp(res, data, cfg) {
 }
 
 // ============ 递归搜索（文件名包含匹配，上限 500 条） ============
-async function searchOp(res, q, cfg) {
+async function searchOp(req, res, q, cfg) {
   const root = resolveAllowedPath(String(q.path || ''), cfg);
   const kw = String(q.q || '').trim().toLowerCase();
   if (!kw) return sendJson(res, 200, { ok: true, results: [] });
@@ -2423,6 +2429,7 @@ async function searchOp(res, q, cfg) {
   const LIMIT = 500;
   async function walk(dir) {
     if (results.length >= LIMIT) return;
+    if (req && req.signal && req.signal.aborted) return;   // 客户端已放弃
     let entries;
     try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
     // 父目录真实路径每层解析一次，免逐条目 realpathSync（同 listDir，2026-11-15 修）
@@ -2432,6 +2439,7 @@ async function searchOp(res, q, cfg) {
     }
     for (const ent of entries) {
       if (results.length >= LIMIT) return;
+      if (req && req.signal && req.signal.aborted) return;
       if (ent.isSymbolicLink()) continue;   // 防链接环
       const full = path.win32.join(dir, ent.name);
       if (isDenied(full, cfg, realDir ? realDir + '\\' + ent.name : undefined)) continue;
