@@ -296,7 +296,7 @@ html-FileNest/
 **v2.1.0.1 (Latest)**
 
 **New features**
-- **Path blacklist (`deniedPaths`) for tamper-proofing**: files and folders on the blacklist cannot be browsed, searched, read or modified — they are hidden from directory listings and search results, and every operation (preview, download, open, save, rename, move, copy, delete, pack) rejects them with 403. The app's own install directory (config, certificates, cache) is always denied and cannot be un-denied; `deniedPaths` in `config.json` adds more entries and takes effect on hot reload. Junction/symlink redirects into denied trees are blocked via real-path resolution.
+- **Path blacklist (`deniedPaths`) for tamper-proofing**: files and folders on the blacklist cannot be browsed, searched, read or modified — they are hidden from directory listings and search results, and every operation (preview, download, open, save, rename, move, copy, delete, pack) rejects them with 403. The app's own install directory (config, certificates, cache) is always denied and cannot be un-denied (the only exception is the app-managed recycle bin, which stays readable for the recycle UI's preview and download — writes remain blocked); `deniedPaths` in `config.json` adds more entries and takes effect on hot reload. Junction/symlink redirects into denied trees are blocked via real-path resolution.
 
 **Fixes**
 - The "New" menu no longer misses "Text Document" and "BMP Image" on Windows 11: registrations without a creation value (`Handler`-only or empty `ShellNew` keys) now appear for text/document/image perceived types, exactly like the Windows 11 menu.
