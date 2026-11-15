@@ -19,6 +19,38 @@ html-FileNest is a lightweight web-based file manager that runs locally on Windo
 - ⚡ **One-Click Deploy** — Double-click to deploy, auto-start on boot, HTTPS with self-signed certificate
 - 🗑️ **One-Click Uninstall** — `--uninstall` removes the service and certificates completely
 - 🔄 **Service Control** — `--restart` / `--stop` commands, plus a restart button at the bottom of the left sidebar with icon and label (for config/ certificate changes and upgrades)
+- 🤖 **AI-Ready API** — A file interface with a damage ceiling for machine callers: caller allowlist, scoped roots, path blacklist, recycle-by-default (see "AI-Ready File Interface" below)
+
+## AI-Ready File Interface
+
+When an AI agent manipulates files, the real question is not speed — it is the blast radius. Direct file access hands the agent the whole machine and relies on prompt-level discipline; html-FileNest puts **code-enforced boundaries** between the agent and your disk. Its REST API was built for machine callers from day one — the legacy `/ping`, `/open`, `/exists`, `/reveal`, `/open-folder` endpoints are kept compatible with [htmlFileAgent](https://github.com/FatFatYoung/htmlFileAgent), and the full `/api/*` surface (list, read, write, rename, move, upload, recycle, search, ...) is a stable contract for automation.
+
+### What the API layer gives you that direct file access cannot
+
+Direct file access has no notion of *who is calling*, *where they may reach*, or *how to take it back*. The HTTP layer adds all three — enforced by code, not by good intentions:
+
+- 🛂 **Caller identity** — Every request is gated by the webpage allowlist (`security.allowedOrigins`): a forged `Host`, a cross-site `Origin`, or `Origin: null` gets 403 before any file is touched. The app's own UI is always allowed; every other caller must be registered explicitly. Direct file access has no equivalent gate at all.
+- 🎯 **Scope** — `roots` bounds where callers can reach, and `deniedPaths` hides and locks sensitive trees entirely — the install directory holding `config.json`, certificates and cache is always denied and cannot be un-denied, and junction/symlink redirects into denied trees are resolved to real paths and blocked.
+- ♻️ **Reversibility** — `/api/rm` moves items to the app-level recycle bin by default and only truly deletes with an explicit `purge: true`; blocked executable extensions are enforced on every write path (upload, rename, move, copy, save, new-file creation). Even a fully tricked agent has a damage ceiling.
+
+### Where it fits
+
+| Caller | Recommended path |
+| --- | --- |
+| Trusted local agent with a human in the loop | Direct file access is fine and faster |
+| Web pages, remote clients, third-party agents | Through the API — the allowlist gate exists exactly for this |
+| Unattended batch jobs | Through the API — recycle-by-default keeps every change recoverable |
+
+The point is not "an AI platform" — it is the **boundary**: a bounded, reversible file surface for callers you do not fully trust, while full-power direct access stays reserved for callers you do.
+
+> **Integration discipline for agents**: when the API is unavailable, stop and report — never fall back to raw shell access. A fallback replaces the code-enforced boundaries above with prompt-level discipline and voids every guarantee at once.
+
+### Development direction
+
+- ✂️ **Precise edit (`edit`/`patch`)** — change a few lines without rewriting the whole file; whole-file overwrite amplifies the risk surface (a concurrent change between read and write gets clobbered), so this gap comes first
+- 📒 **Structured audit log (JSONL)** — every API call recorded with caller, action, result and timing, so "who touched what" is always answerable
+- 🔁 **Idempotency keys for mutating endpoints** — a retried or timed-out delete can never delete twice
+- 🔌 **MCP adapter layer** — translate standard MCP file tools onto the existing REST API so Claude/Cursor-class clients connect with zero adaptation, while the human UI and the htmlFileAgent compatibility layer stay untouched
 
 ## Architecture
 
