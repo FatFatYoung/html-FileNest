@@ -1008,7 +1008,7 @@ async function statPath(res, q, cfg) {
 // 单批上限 2000；逐路径过 resolveAllowedPath + isDenied 同门禁，只读。
 // 真实路径兜底与逐条 realpathSync 语义等价：parent realpath 每目录缓存一次，
 // lstat 判符号链接、仅链接条目逐条 realpath（2026-11-15 提速，防万条逐条系统调用）
-async function statBatchOp(res, data, cfg) {
+async function statBatchOp(req, res, data, cfg) {
   const paths = Array.isArray(data && data.paths) ? data.paths.slice(0, 2000) : [];
   const list = cfg.deniedPaths || [];
   const nkey = (x) => path.win32.normalize(String(x)).replace(/[\\\/]+$/, '').toLowerCase();
@@ -1018,7 +1018,8 @@ async function statBatchOp(res, data, cfg) {
   };
   const realCache = new Map();
   const out = await Promise.all(paths.map(async (p) => {
-    if (req && req.signal && req.signal.aborted) return null;   // 客户端已放弃
+    // 断开检测用 socket 语义：Bun 里 POST body 读完后 req.signal 即 abort，不能当断开用
+    if (res.writableEnded || (req.socket && req.socket.destroyed)) return null;
     try {
       const full = resolveAllowedPath(p, cfg);
       if (hit(nkey(full))) return null;
