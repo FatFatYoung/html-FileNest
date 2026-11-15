@@ -303,6 +303,8 @@ html-FileNest/
 - Directory listing metadata lookup is now concurrent (batches of 200) instead of one-by-one serial `stat`; listing time no longer scales with per-file latency — on a 10,000-file folder this step dropped from ~700ms to ~200ms locally, far more on slow disks/UNC shares (it was ~73% of total listing time).
 - The Web UI enters the folder on the first response and backfills size/modified columns progressively without blocking interaction; huge lists render through `DocumentFragment` aggregation to avoid thousands of reflows.
 - Filesystem thread pool widened to 64 (`UV_THREADPOOL_SIZE=64`) in the service process and `start.vbs`, so slow or unreachable network shares can no longer monopolize the default 4-thread pool; existing `start.vbs` files are upgraded automatically on deploy.
+- Back/forward navigation is instant: visited listings are cached client-side for 90 seconds (any write operation invalidates the cache), so returning to a folder shows it immediately without re-fetching or re-backfilling.
+- `/api/stat-batch` per-batch limit raised to 2000 and its real-path blacklist guard now resolves the parent directory once per folder and detects symlinks via `lstat` (same junction-safe rejection semantics as before, far fewer system calls).
 
 **v2.1.0.1**
 

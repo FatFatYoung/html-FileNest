@@ -616,6 +616,8 @@ body {
     }).then(function (r) {
       return r.json().then(function (d) {
         if (!d.ok) throw new Error(d.error || 'request failed');
+        // 写操作成功后清目录缓存，避免后退/上层看到过期内容（2026-11-15）
+        if (/\/api\/(rm|rename|mkdir|mkfile|mv|cp|write|upload|extract-all|recycle-restore|recycle-restore-all|recycle-purge|recycle-empty|service-restart)\b/.test(url)) lsCache = {};
         return d;
       });
     });
@@ -1528,7 +1530,23 @@ body {
         showToast(tr('打开失败: ') + e.message, 'error');
       });
     }
-    // —— 普通目录（两阶段：fast 首包秒进，size/时间后台分批补齐，2026-11-15）——
+    // —— 普通目录（两阶段：fast 首包秒进，size/时间后台分批补齐；已看过的目录走
+    //    缓存秒开——后退/前进不重发请求不重补齐，2026-11-15）——
+    var cached = lsCache[target.path];
+    if (cached && Date.now() - cached.ts < 90000) {
+      state.current = { path: target.path, source: target.source };
+      state.items = cached.items;
+      state.selected = null; state.multi = []; state.anchor = null;
+      state.filter = '';
+      $('search').value = '';
+      if (pushHistory) {
+        state.history = state.history.slice(0, state.historyIdx + 1);
+        state.history.push({ path: target.path, source: target.source });
+        state.historyIdx = state.history.length - 1;
+      }
+      render();
+      return Promise.resolve();
+    }
     return apiGet('/api/ls?path=' + enc(target.path) + '&fast=1').then(function (r) {
       state.current = { path: r.path, source: target.source };
       state.items = r.items || [];
@@ -1542,14 +1560,17 @@ body {
         state.historyIdx = state.history.length - 1;
       }
       render();
-      if (r.fast) fillStats(state.items);
+      if (r.fast) fillStats(state.items, r.path);
+      else lsCache[r.path] = { items: state.items, ts: Date.now() };
     }).catch(function (e) {
       showToast(tr('打开失败: ') + e.message, 'error');
     });
   }
   // —— 流式补齐：分批 POST /api/stat-batch 回填 fast 列表的 size/mtime（2026-11-15）——
+  // —— 目录缓存：已看过的目录秒开（后退/前进不重发请求），写操作后整体失效 ——
+  var lsCache = {};
   var fillSeq = 0;
-  function fillStats(items) {
+  function fillStats(items, dirPath) {
     var seq = ++fillSeq;
     var byPath = {}, pend = [];
     items.forEach(function (it) {
@@ -1557,14 +1578,16 @@ body {
       if (it._pending) pend.push(it.path);
     });
     if (!pend.length) return;
-    var BATCH = 300;
+    var BATCH = 1000;
     function step(i) {
       if (seq !== fillSeq) return;   // 已导航到别处，中止补齐
       if (i >= pend.length) {
-        // 全部到齐重排一次（默认按修改时间排序依赖补齐数据），保留滚动位置
+        // 全部到齐重排一次（默认按修改时间排序依赖补齐数据），保留滚动位置；
+        // 并写入目录缓存（同对象引用，后退/前进秒开）
         var top = listEl.scrollTop;
         renderList();
         listEl.scrollTop = top;
+        lsCache[dirPath] = { items: items, ts: Date.now() };
         return;
       }
       apiPost('/api/stat-batch', { paths: pend.slice(i, i + BATCH) }).then(function (r) {
