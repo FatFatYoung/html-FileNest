@@ -30,7 +30,7 @@ When an AI agent manipulates files, the real question is not speed — it is the
 Direct file access has no notion of *who is calling*, *where they may reach*, or *how to take it back*. The HTTP layer adds all three — enforced by code, not by good intentions:
 
 - 🛂 **Caller identity** — Every request is gated by the webpage allowlist (`security.allowedOrigins`): a forged `Host`, a cross-site `Origin`, or `Origin: null` gets 403 before any file is touched. The app's own UI is always allowed; every other caller must be registered explicitly. Direct file access has no equivalent gate at all.
-- 🎯 **Scope** — `roots` bounds where callers can reach, and `deniedPaths` hides and locks sensitive trees entirely — the install directory holding `config.json`, certificates and cache is always denied and cannot be un-denied, and junction/symlink redirects into denied trees are resolved to real paths and blocked.
+- 🎯 **Scope** — `roots` bounds where callers can reach, and `deniedPaths` hides and locks sensitive trees entirely — the install directory holding `config.json`, certificates and cache is always denied and cannot be un-denied (the only exception is the app-managed recycle bin, which stays readable for the recycle UI's preview and download — writes remain blocked), and junction/symlink redirects into denied trees are resolved to real paths and blocked.
 - ♻️ **Reversibility** — `/api/rm` moves items to the app-level recycle bin by default and only truly deletes with an explicit `purge: true`; blocked executable extensions are enforced on every write path (upload, rename, move, copy, save, new-file creation). Even a fully tricked agent has a damage ceiling.
 
 ### Where it fits
@@ -193,7 +193,7 @@ Edit `C:\html-FileNest\config.json`:
 | `ports` | HTTP/HTTPS listening ports (default: 20000/20443) |
 | `sources.*.roots` | Allowed root paths. `"*"` = all drives. Use `"C:\\Users\\me\\*"` to restrict scope |
 | `allowedExtensions` | Whitelist of allowed extensions. Empty array = no restriction |
-| `deniedPaths` | Path blacklist: listed files/folders cannot be browsed, searched, read or modified (hidden from listings too). The app's own install directory is always denied |
+| `deniedPaths` | Path blacklist: listed files/folders cannot be browsed, searched, read or modified (hidden from listings too). The app's own install directory is always denied (except the app-managed recycle bin, which stays readable for its preview/download; writes still blocked) |
 | `blockExecutables` | Reject executable files (default: true) |
 | `security.allowedOrigins` | Webpage allowlist for API callers. The app's own UI origin (localhost/127.0.0.1 on the configured ports; defaults 20000/20443; same-origin calls with matching `Host` included) is always allowed and not subject to the list; entries are full origins (`http://192.168.1.10`: exact scheme+host+port) or bare domains (`192.168.1.10`: exact hostname, any scheme/port); exact match only - no wildcards, no subdomain inheritance (`b.a.com` needs its own entry); empty list (default) rejects every other site; `Origin: null` is always rejected |
 | `security.requireLocalOrigin` | Only accept requests from localhost (default: true) |
