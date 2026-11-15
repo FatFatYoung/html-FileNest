@@ -1836,10 +1836,9 @@ async function getNewFileTypes() {
   return newFileTypesCache;
 }
 
-const SHELLNEW_QUERY_PS = String.raw`
-$ErrorActionPreference = 'SilentlyContinue'
-if (-not ('SnNew.SH' -as [type])) {
-  Add-Type -Namespace SnNew -Name SH -MemberDefinition @'
+const SHELLNEW_QUERY_PS = String.raw`$ErrorActionPreference = 'SilentlyContinue'
+if (-not ('SnNew2.SH' -as [type])) {
+  Add-Type -Namespace SnNew2 -Name SH -MemberDefinition @'
 [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] public static extern int SHLoadIndirectString(string s, System.Text.StringBuilder b, uint c, IntPtr r);
 [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, out SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
 [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
@@ -1848,26 +1847,26 @@ public struct SHFILEINFO { public IntPtr hIcon; public int iIcon; public uint dw
 }
 if (-not ('System.Drawing.Icon' -as [type])) { Add-Type -AssemblyName System.Drawing | Out-Null }
 
-function Res2([string]$s) {
+function Res3([string]$s) {
   if (-not $s) { return '' }
   if ($s.StartsWith('@')) {
     try {
       $sb = New-Object System.Text.StringBuilder 512
-      if (([SnNew.SH]::SHLoadIndirectString($s, $sb, 512, [IntPtr]::Zero)) -ge 0 -and $sb.Length -gt 0) { return $sb.ToString() }
+      if (([SnNew2.SH]::SHLoadIndirectString($s, $sb, 512, [IntPtr]::Zero)) -ge 0 -and $sb.Length -gt 0) { return $sb.ToString() }
     } catch { }
     return ''
   }
   return $s
 }
-function Strip-Accel([string]$s) {
+function Strip-Accel3([string]$s) {
   if (-not $s) { return '' }
   return ($s -replace '\s*\(\&[^\)]*\)', '').Trim()
 }
-function Get-IconB64([string]$ext) {
+function Get-IconB64b([string]$ext) {
   try {
-    $info = New-Object SnNew.SH+SHFILEINFO
-    $flags = [uint32]0x110   # SHGFI_ICON | SHGFI_USEFILEATTRIBUTES (LARGE)
-    $h = [SnNew.SH]::SHGetFileInfo(('x' + $ext), [uint32]0x80, [ref]$info, [uint32]([System.Runtime.InteropServices.Marshal]::SizeOf($info)), $flags)
+    $info = New-Object SnNew2.SH+SHFILEINFO
+    $flags = [uint32]0x110
+    $h = [SnNew2.SH]::SHGetFileInfo(('x' + $ext), [uint32]0x80, [ref]$info, [uint32]([System.Runtime.InteropServices.Marshal]::SizeOf($info)), $flags)
     if ($h -eq [IntPtr]::Zero -or $info.hIcon -eq [IntPtr]::Zero) { return '' }
     $ic = [System.Drawing.Icon]::FromHandle($info.hIcon)
     $bmp = $ic.ToBitmap()
@@ -1875,13 +1874,15 @@ function Get-IconB64([string]$ext) {
     $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
     $b64 = [Convert]::ToBase64String($ms.ToArray())
     $bmp.Dispose(); $ic.Dispose()
-    [void][SnNew.SH]::DestroyIcon($info.hIcon)
+    [void][SnNew2.SH]::DestroyIcon($info.hIcon)
     return $b64
   } catch { return '' }
 }
 
 $items = New-Object System.Collections.Generic.List[object]
-$extDef = @{}    # ext -> default ProgID（跨根去重，优先非空）
+$extDef = @{}        # ext -> 默认 ProgID（按 HKCU > 已加载用户 > HKLM 优先级，先到先得）
+$extUc   = @{}       # ext -> UserChoice ProgId 列表（文件类型默认打开方式 = Windows 菜单取名的第一来源）
+$cacheSet = @{}      # Explorer 新建菜单缓存（Windows 菜单自己维护的清单）
 
 function Add-SnEntry($cl, $sn, $ext, $progId, $prio) {
   $vFile = $sn.GetValue('FileName')
@@ -1903,40 +1904,29 @@ function Add-SnEntry($cl, $sn, $ext, $progId, $prio) {
   } elseif ($vCmd) {
     $kind = 'command'; $command = [string]$vCmd
   }
-  $itemName = Res2 ([string]$sn.GetValue('ItemName'))
-  $menuText = Strip-Accel (Res2 ([string]$sn.GetValue('MenuText')))
-  # 名称链条（与 Windows 菜单逐字一致）：类型友好名 FriendlyTypeName → MenuText → ProgID 默认值 → ItemName → 扩展名
-  $friendly = ''
+  $itemName = Res3 ([string]$sn.GetValue('ItemName'))
+  $menuText = Strip-Accel3 (Res3 ([string]$sn.GetValue('MenuText')))
+  $pd = ''
   if ($progId) {
     $pk = $cl.OpenSubKey($progId)
     if (-not $pk) { $pk = $cl.OpenSubKey($ext + '\' + $progId) }
-    if ($pk) {
-      $ftn = [string]$pk.GetValue('FriendlyTypeName')
-      if (-not $ftn) { $ftn = [string]$pk.GetValue('') }
-      $friendly = Res2 $ftn
-      $pd = Res2 ([string]$pk.GetValue(''))
-      $pk.Close()
-    }
+    if ($pk) { $pd = Res3 ([string]$pk.GetValue('')); $pk.Close() }
   }
-  $name = $friendly
-  if (-not $name) { $name = $menuText }
-  if (-not $name) { $name = $pd }
-  if (-not $name) { $name = $itemName }
-  if (-not $name) { $name = $ext }
   $items.Add([PSCustomObject]@{
     ext = $ext; progId = $progId; prio = $prio; kind = $kind
     template = $template; data = $data; command = $command
-    itemName = $itemName; menuText = $menuText
-    hasHandler = [bool]$vHand; name = $name
+    itemName = $itemName; menuText = $menuText; progDefault = $pd
+    hasHandler = [bool]$vHand; hasNullFile = ($null -ne $vNull)
   })
 }
 
+# 根优先级：CurrentUser > 已加载用户 > LocalMachine（HKCR 合并语义：用户覆盖机器）
 $hives = New-Object System.Collections.Generic.List[object]
-$hives.Add(@{ h = 'LocalMachine'; p = 'Software\Classes' })
 $hives.Add(@{ h = 'CurrentUser';  p = 'Software\Classes' })
 foreach ($s in [Microsoft.Win32.Registry]::Users.GetSubKeyNames()) {
   if ($s.StartsWith('S-1-5-21-')) { $hives.Add(@{ h = 'Users'; p = ($s + '\Software\Classes') }) }
 }
+$hives.Add(@{ h = 'LocalMachine'; p = 'Software\Classes' })
 $roots = New-Object System.Collections.Generic.List[object]
 foreach ($hv in $hives) {
   foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
@@ -1948,7 +1938,41 @@ foreach ($hv in $hives) {
     } catch { }
   }
 }
-# 第一遍：收集扩展名 → 默认 ProgID；第二遍：枚举 ShellNew（含 ProgID 根层 <ProgID>\ShellNew）
+
+# UserChoice（默认打开方式）+ Explorer 新建菜单缓存，两样都是 Windows 菜单自己读的
+foreach ($hv in $hives) {
+  try {
+    $hive = [Microsoft.Win32.RegistryHive]$hv.h
+    $bk = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, [Microsoft.Win32.RegistryView]::Registry64)
+    $fx = $bk.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts')
+    if ($fx) {
+      foreach ($n in $fx.GetSubKeyNames()) {
+        if (-not $n.StartsWith('.')) { continue }
+        $uc = $fx.OpenSubKey($n + '\UserChoice')
+        if ($uc) {
+          $pid2 = [string]$uc.GetValue('ProgId')
+          $uc.Close()
+          if ($pid2) {
+            if (-not $extUc.ContainsKey($n)) { $extUc[$n] = New-Object System.Collections.Generic.List[object] }
+            if (-not $extUc[$n].Contains($pid2)) { $extUc[$n].Add($pid2) }
+          }
+        }
+      }
+      $fx.Close()
+    }
+    $cs = $bk.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\Discardable\PostSetup\ShellNew')
+    if ($cs) {
+      $cache = $cs.GetValue('Classes')
+      $cs.Close()
+      foreach ($c in @($cache)) {
+        if ($c -and $c.StartsWith('.')) { $cacheSet[$c.ToLower()] = $true }
+      }
+    }
+    $bk.Close()
+  } catch { }
+}
+
+# 第一遍：扩展名默认 ProgID（按根优先级）；第二遍：枚举 ShellNew（顶层/嵌套/深嵌套/ProgID 根层）
 foreach ($cl in $roots) {
   foreach ($n in $cl.GetSubKeyNames()) {
     if (-not $n.StartsWith('.')) { continue }
@@ -1962,10 +1986,14 @@ foreach ($cl in $roots) {
       if ($sub -eq 'ShellNew') { continue }
       $sn2 = $ek.OpenSubKey($sub + '\ShellNew')
       if ($sn2) { Add-SnEntry $cl $sn2 $n $sub 1; $sn2.Close() }
-      foreach ($sub2 in $ek.OpenSubKey($sub).GetSubKeyNames()) {
-        if ($sub2 -eq 'ShellNew') { continue }
-        $sn3 = $ek.OpenSubKey($sub + '\' + $sub2 + '\ShellNew')
-        if ($sn3) { Add-SnEntry $cl $sn3 $n ($sub + '\' + $sub2) 2; $sn3.Close() }
+      $sk2 = $ek.OpenSubKey($sub)
+      if ($sk2) {
+        foreach ($sub2 in $sk2.GetSubKeyNames()) {
+          if ($sub2 -eq 'ShellNew') { continue }
+          $sn3 = $ek.OpenSubKey($sub + '\' + $sub2 + '\ShellNew')
+          if ($sn3) { Add-SnEntry $cl $sn3 $n ($sub + '\' + $sub2) 2; $sn3.Close() }
+        }
+        $sk2.Close()
       }
     }
     $ek.Close()
@@ -1983,30 +2011,71 @@ foreach ($cl in $roots) {
   }
 }
 
-# 每扩展名取最优注册：默认 ProgID 优先 > 创建方式（模板>数据>空>Handler>命令>无） > 顶层优先
+# 每扩展名取最优注册：UserChoice/默认 ProgID 优先 > 创建方式 > 顶层优先
 $best = @{}
-$scoreMap = @{ template = 5; data = 4; null = 3; handler = 2; command = 1; none = 0 }
+$scoreMap = @{ template = 5; data = 4; null = 3; handler = 2; none = 1; command = 0 }
 foreach ($it in $items) {
   $k = $it.ext.ToLower()
   $def = $extDef[$it.ext]
+  $uc = $extUc[$it.ext]
   $defRank = 0
   if ($def -and ($it.progId -ieq $def)) { $defRank = 1 }
+  if ($uc -and (($uc | Where-Object { $_ -ieq $it.progId }).Count -gt 0)) { $defRank = 2 }
   $rank = $defRank * 1000 + $scoreMap[$it.kind] * 10 + (2 - $it.prio)
   if ((-not $best.ContainsKey($k)) -or ($rank -gt $best[$k].rank)) { $best[$k] = @{ rank = $rank; it = $it } }
 }
 
+function Get-FriendlyOf($cl, $ext, $progId) {
+  if (-not $progId) { return '' }
+  $pk = $cl.OpenSubKey($progId)
+  if (-not $pk) { $pk = $cl.OpenSubKey($ext + '\' + $progId) }
+  if (-not $pk) { return '' }
+  $ftn = [string]$pk.GetValue('FriendlyTypeName')
+  if (-not $ftn) { $ftn = [string]$pk.GetValue('') }
+  $pk.Close()
+  return (Res3 $ftn)
+}
+
 $out = New-Object System.Collections.Generic.List[object]
-foreach ($k in ($best.Keys | Sort-Object)) {
-  $it = $best[$k].it
-  $def = $extDef[$it.ext]
-  # —— Windows 菜单过滤规律（与桌面右键菜单逐项实证） ——
-  if (-not $def) { continue }                                             # ① 无默认 ProgID 的类型不进菜单（如 .contact）
-  if ($it.kind -eq 'command' -or $it.kind -eq 'none') { continue }         # ② 无文件创建机制的注册不进菜单
-  if ($it.hasHandler -and (-not $it.itemName) -and (-not $it.menuText)) { continue }  # ③ Handler 类注册必须带标签源（如 .library-ms）
+$allExt = New-Object System.Collections.Generic.HashSet[string]
+foreach ($k in $best.Keys) { [void]$allExt.Add($k) }
+foreach ($k in $cacheSet.Keys) { [void]$allExt.Add($k) }
+foreach ($k in ($allExt | Sort-Object)) {
+  $it = $null
+  if ($best.ContainsKey($k)) { $it = $best[$k].it }
+  $def = $extDef[$k]
+  if (-not $def) {
+    foreach ($e2 in $extDef.Keys) { if ($e2.ToLower() -eq $k) { $def = $extDef[$e2]; break } }
+  }
+  $ucList = $null
+  foreach ($e2 in $extUc.Keys) { if ($e2.ToLower() -eq $k) { $ucList = $extUc[$e2]; break } }
+  # —— Windows 菜单过滤规律（两台机器逐项实证） ——
+  if ((-not $def) -and (-not $ucList)) { continue }                                   # ① 无默认 ProgID 不进菜单（.contact）
+  if ($it -and $it.kind -eq 'command') { continue }                                   # ② 仅 Command 创建方式不进菜单
+  if ($it -and $it.hasHandler -and $it.hasNullFile -and (-not $it.itemName) -and (-not $it.menuText)) { continue }  # ③ Handler+NullFile 无标签不进菜单（.library-ms）
+  if ($it -and $it.kind -eq 'none') {                                                 # ④ 无创建值的空壳注册：
+    $hasLabel = [bool]($it.itemName -or $it.menuText)
+    if ($hasLabel -and (-not $cacheSet.ContainsKey($k))) { continue }                  #    带标签但缓存不认识 -> 不进（压缩文件夹形状）
+  }                                                                                  #    无标签空壳（文本文档/BMP 形状）-> 进，建空文件
+  # —— 名称链条（与 Windows 菜单逐字一致）——
+  # UserChoice 默认打开方式 -> 扩展名默认 ProgID -> 菜单文字 MenuText -> 所选注册 ProgID -> ItemName -> 扩展名
+  $name = ''
+  if ($ucList) { foreach ($u in $ucList) { if (-not $name) { $name = Get-FriendlyOf ([Microsoft.Win32.Registry]::ClassesRoot) $k $u } } }
+  if (-not $name) { $name = Get-FriendlyOf ([Microsoft.Win32.Registry]::ClassesRoot) $k $def }
+  if (-not $name -and $it) { $name = $it.menuText }
+  if (-not $name -and $it) { $name = $it.progDefault }
+  if (-not $name -and $it) { $name = $it.itemName }
+  if (-not $name) { $name = $k }
+  $kindOut = 'null'; $template = $null; $data = $null; $command = $null
+  if ($it) {
+    $kindOut = $it.kind
+    if ($kindOut -eq 'none') { $kindOut = 'null' }
+    $template = $it.template; $data = $it.data; $command = $it.command
+  }
   $out.Add([PSCustomObject]@{
-    ext = $it.ext.ToLower(); name = $it.name; kind = $it.kind
-    template = $it.template; data = $it.data; command = $it.command
-    icon = (Get-IconB64 $it.ext)
+    ext = $k; name = $name; kind = $kindOut
+    template = $template; data = $data; command = $command
+    icon = (Get-IconB64b $k)
   })
 }
 $out | ConvertTo-Json -Compress
