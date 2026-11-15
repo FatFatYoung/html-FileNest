@@ -727,7 +727,18 @@ function isDenied(absNorm, cfg) {
   return false;
 }
 
-function resolveAllowedPath(pathStr, cfg) {
+// —— 回收站例外（只读）：回收站子树仅供"读"类接口直读（预览/下载/文本/Office/压缩包条目），
+//    写入/删除/列目录/搜索仍受黑名单拒绝，保持"不可篡改/不可浏览"语义 ——
+function isRecycleChild(absNorm) {
+  try {
+    const nkey = (p) => path.win32.normalize(String(p)).replace(/[\\\/]+$/, '').toLowerCase();
+    const base = nkey(fs.realpathSync(RECYCLE_DIR));
+    const rl = nkey(fs.realpathSync(absNorm));
+    return rl === base || rl.startsWith(base + '\\');
+  } catch (_) { return false; }
+}
+
+function resolveAllowedPath(pathStr, cfg, opts) {
   const s = String(pathStr || '');
   if (!s) throw new Error('path required');
   if (/[\x00-\x1f]/.test(s)) throw new Error('invalid characters');
@@ -737,7 +748,7 @@ function resolveAllowedPath(pathStr, cfg) {
   if (!norm.startsWith('\\\\') && !/^[A-Za-z]:\\/.test(norm)) {
     throw new Error('must be absolute path');
   }
-  if (isDenied(norm, cfg)) {
+  if (isDenied(norm, cfg) && !(opts && opts.trashRead && isRecycleChild(norm))) {
     const e = new Error('path is denied by blacklist');
     e.status = 403;
     throw e;
@@ -1023,7 +1034,7 @@ function decodeTextBuffer(buf) {
 }
 
 async function readTextFile(res, q, cfg) {
-  const file = resolveAllowedPath(q.path, cfg);
+  const file = resolveAllowedPath(q.path, cfg, { trashRead: true });
   const extCheck = checkExtension(file, cfg);
   if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   const s = await fs.promises.stat(file);
@@ -1451,7 +1462,7 @@ function buildArchiveItems(rawEntries, subdir) {
 }
 
 async function archiveList(res, q, cfg) {
-  const file = resolveAllowedPath(q.path, cfg);
+  const file = resolveAllowedPath(q.path, cfg, { trashRead: true });
   const s = await fs.promises.stat(file);
   if (!s.isFile()) throw new Error('not a file');
   const format = detectArchiveFormat(file);
@@ -1488,7 +1499,7 @@ async function archiveList(res, q, cfg) {
 
 // —— 多格式压缩包提取单个文件 ——
 async function archiveExtract(req, res, q, cfg) {
-  const file = resolveAllowedPath(q.path, cfg);
+  const file = resolveAllowedPath(q.path, cfg, { trashRead: true });
   const entry = String(q.entry || '');
   if (!entry) throw new Error('missing entry');
   for (const p of [entry, file]) {
@@ -1555,11 +1566,11 @@ async function officePreview(res, q, cfg) {
   if (zipSep > 0) {
     const archivePath = q.path.substring(0, zipSep);
     const entry = q.path.substring(zipSep + 2);
-    file = resolveAllowedPath(archivePath, cfg);
+    file = resolveAllowedPath(archivePath, cfg, { trashRead: true });
     buf = await extractEntryFromArchive(file, entry);
     if (!buf) throw new Error('entry not found: ' + entry);
   } else {
-    file = resolveAllowedPath(q.path, cfg);
+    file = resolveAllowedPath(q.path, cfg, { trashRead: true });
     const s = await fs.promises.stat(file);
     if (!s.isFile()) throw new Error('not a file');
     buf = await fs.promises.readFile(file);
@@ -1669,7 +1680,7 @@ async function officePreview(res, q, cfg) {
 function streamFile(req, res, q, cfg) {
   return new Promise(async (resolve, reject) => {
     try {
-      const file = resolveAllowedPath(q.path, cfg);
+      const file = resolveAllowedPath(q.path, cfg, { trashRead: true });
       const extCheck = checkExtension(file, cfg);
       if (!extCheck.ok) {
         sendJson(res, 403, { ok: false, error: extCheck.reason });
