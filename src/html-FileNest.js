@@ -1000,14 +1000,43 @@ async function statPath(res, q, cfg) {
 }
 
 // 批量 stat：两阶段加载的第二阶段——前端分批补齐 fast 列表的 size/mtime。
-// 单批上限 500；逐路径过 resolveAllowedPath + isDenied，与 /api/ls 同门禁，只读（2026-11-15）
+// 单批上限 2000；逐路径过 resolveAllowedPath + isDenied 同门禁，只读。
+// 真实路径兜底与逐条 realpathSync 语义等价：parent realpath 每目录缓存一次，
+// lstat 判符号链接、仅链接条目逐条 realpath（2026-11-15 提速，防万条逐条系统调用）
 async function statBatchOp(res, data, cfg) {
-  const paths = Array.isArray(data && data.paths) ? data.paths.slice(0, 500) : [];
+  const paths = Array.isArray(data && data.paths) ? data.paths.slice(0, 2000) : [];
+  const list = cfg.deniedPaths || [];
+  const nkey = (x) => path.win32.normalize(String(x)).replace(/[\\\/]+$/, '').toLowerCase();
+  const hit = (rl) => {
+    for (const d of list) { if (d && (rl === d || rl.startsWith(d + '\\'))) return true; }
+    return false;
+  };
+  const realCache = new Map();
   const out = await Promise.all(paths.map(async (p) => {
     try {
       const full = resolveAllowedPath(p, cfg);
-      if (isDenied(full, cfg)) return null;
-      const s = await fs.promises.stat(full);
+      if (hit(nkey(full))) return null;
+      let s;
+      if (list.length) {
+        const parent = path.win32.dirname(full);
+        let realParent = realCache.get(parent);
+        if (realParent === undefined) {
+          try { realParent = nkey(fs.realpathSync(parent)); } catch (e) { realParent = ''; }
+          realCache.set(parent, realParent);
+        }
+        const lst = await fs.promises.lstat(full);
+        if (lst.isSymbolicLink()) {
+          let rl;
+          try { rl = nkey(fs.realpathSync(full)); } catch (e) { return null; }
+          if (hit(rl)) return null;
+          s = await fs.promises.stat(full);        // 链接条目跟随取目标真值
+        } else {
+          if (realParent && hit(realParent + '\\' + nkey(path.win32.basename(full)))) return null;
+          s = lst;                                  // 非链接：lstat 即目标元数据
+        }
+      } else {
+        s = await fs.promises.stat(full);
+      }
       return {
         path: full,
         type: s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other',
