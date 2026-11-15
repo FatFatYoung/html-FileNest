@@ -263,7 +263,13 @@ html-FileNest/
 
 **v2.1.0.1 (Latest)**
 
+**New features**
+- **Path blacklist (`deniedPaths`) for tamper-proofing**: files and folders on the blacklist cannot be browsed, searched, read or modified — they are hidden from directory listings and search results, and every operation (preview, download, open, save, rename, move, copy, delete, pack) rejects them with 403. The app's own install directory (config, certificates, cache) is always denied and cannot be un-denied; `deniedPaths` in `config.json` adds more entries and takes effect on hot reload. Junction/symlink redirects into denied trees are blocked via real-path resolution.
+
 **Fixes**
+- The "New" menu no longer misses "Text Document" and "BMP Image" on Windows 11: registrations without a creation value (`Handler`-only or empty `ShellNew` keys) now appear for text/document/image perceived types, exactly like the Windows 11 menu.
+- Pseudo registrations that Windows keeps out (compressed-folder leftovers, third-party entries such as FontCreator projects) no longer appear in the "New" menu.
+- Menu labels for types registered by several applications (e.g. Office and WPS) now match Windows exactly by resolving the default association per user first (UserChoice, then HKCU over HKLM).
 - The "New" menu now matches Windows' own right-click "New" menu exactly, item by item. The `ShellNew` registry lookup covers every registration location Windows consults - the top-level `.ext\ShellNew` key, the nested `.ext\<ProgID>\ShellNew` key (the standard registration spot for Office/WPS documents and compressed folders, e.g. `.docx\Word.Document.12\ShellNew`), the 32-bit (WOW64) registry view used by 32-bit applications such as WPS, every loaded user's `Software\Classes` hive, and the Explorer New-menu cache as a fallback - and items Windows leaves out stay out: types without a default `ProgID`, registrations without a file-creation mechanism, and handler-based registrations without a label source (e.g. Library Folder) are filtered exactly like Explorer does.
 - Menu labels now read exactly like Windows': the file type's friendly name (`FriendlyTypeName`, indirect resource strings resolved), no "(.ext)" suffix, sorted the Windows way (folder, shortcut, then by extension). Previously the ShellNew `ItemName` string was shown instead, which never matches the Explorer menu text.
 - New files are now created exactly the way Windows creates them, per the type's `ShellNew` registration: template copy (`FileName`), initial content (`Data`), creation command (`Command`, run with `%1` = the new file path), or empty file (`NullFile`). Previously every new file was created empty regardless of type.
