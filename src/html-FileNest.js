@@ -25,8 +25,12 @@ process.on('uncaughtException', (err) => {
   console.error('[html-FileNest 防崩溃] ' + (err && err.stack || err));
 });
 
+// fs 线程池扩容（须在任何 fs I/O 之前设置）：默认 4 线程被慢盘/UNC 占满会拖垮目录
+// 枚举（2026-11-15 卡顿根因之一）；start.vbs 侧同设，覆盖所有启动方式
+if (!process.env.UV_THREADPOOL_SIZE) process.env.UV_THREADPOOL_SIZE = '64';
+
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '2.1.0.1';
+const SERVICE_VER = '2.1.0.2';
 const HOST        = '127.0.0.1';
 const INSTALL_DIR = process.env.FIN_INSTALL_DIR || 'C:\\html-FileNest';
 // 打包 exe 自身所在目录（便携运行时可能与 INSTALL_DIR 不同）；从源码运行时为 null
@@ -208,10 +212,15 @@ async function install() {
   if (!fs.existsSync(CONFIG_PATH)) {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf8');
   }
-  if (!fs.existsSync(VBS_PATH)) {
-    fs.writeFileSync(VBS_PATH,
-      'CreateObject("WScript.Shell").Run """' + EXE_PATH + '"" --serve", 0, False\r\n',
-      'ascii');
+  // UV_THREADPOOL_SIZE=64：fs 线程池默认 4 线程，被慢盘/死 UNC 占满时目录枚举整体卡死
+  // （2026-11-15 卡顿根因之一）；内容有变时重写 start.vbs，旧部署升级后自动换新
+  const vbsBody = 'CreateObject("WScript.Shell").Run "cmd /c set UV_THREADPOOL_SIZE=64 && """' + EXE_PATH + '"" --serve", 0, False\r\n';
+  try {
+    if (!fs.existsSync(VBS_PATH) || fs.readFileSync(VBS_PATH, 'ascii') !== vbsBody) {
+      fs.writeFileSync(VBS_PATH, vbsBody, 'ascii');
+    }
+  } catch (e) {
+    if (!fs.existsSync(VBS_PATH)) fs.writeFileSync(VBS_PATH, vbsBody, 'ascii');
   }
   if (!fs.existsSync(PFX_PATH)) makeCert();
 
@@ -581,6 +590,7 @@ async function handleApi(req, res, p, q, cfg) {
       const data = body ? JSON.parse(body) : {};
       if (p === '/api/mkdir')  return await mkdirOp(res, data, cfg);
       if (p === '/api/mkfile') return await mkfileOp(res, data, cfg);
+      if (p === '/api/stat-batch') return await statBatchOp(res, data, cfg);
       if (p === '/api/favorites') return await favoritesAddOp(res, data, cfg);
       if (p === '/api/unfavorite') return await unfavoriteOp(res, data);
       if (p === '/api/rename') return await renameOp(res, data, cfg);
@@ -709,7 +719,10 @@ async function listShares(hostPath) {
 }
 
 // —— 路径黑名单（防篡改）：命中即拒绝 ——
-function isDenied(absNorm, cfg) {
+// realPath：批量列表场景传入已解析的真实路径（调用方缓存父目录真实路径、拼接条目名），
+// 免逐条目 realpathSync 系统调用（万级目录曾因此每条 0.12ms，2026-11-15 修）；
+// 不传则回退 realpathSync（junction/符号链接指向黑名单目录时同样拒绝）
+function isDenied(absNorm, cfg, realPath) {
   const list = cfg.deniedPaths || [];
   if (!list.length) return false;
   const nkey = (p) => path.win32.normalize(String(p)).replace(/[\\\/]+$/, '').toLowerCase();
@@ -719,7 +732,7 @@ function isDenied(absNorm, cfg) {
   }
   // 真实路径兜底：junction/符号链接指向黑名单目录时同样拒绝
   try {
-    const rl = nkey(fs.realpathSync(absNorm));
+    const rl = realPath ? nkey(realPath) : nkey(fs.realpathSync(absNorm));
     for (const d of list) {
       if (d && (rl === d || rl.startsWith(d + '\\'))) return true;
     }
@@ -894,6 +907,9 @@ async function desktopInfo(res, cfg) {
 
 async function listDir(res, q, cfg) {
   const dir = resolveAllowedPath(q.path, cfg);
+  // fast=1 两阶段快路径：只用 readdir 自带类型零 stat 秒回，size/mtime 由前端
+  // 经 /api/stat-batch 分批补齐（2026-11-15 大目录"先进再流式"优化）
+  const fast = q.fast === '1' || q.fast === 'true';
   // UNC 主机根（\\host）不能用 readdir 列目录——Windows 共享枚举是另一套 API，
   // 用 net view 列出主机上的可见共享，以目录形式呈现（2026-11-13）
   if (isBareHost(dir)) {
@@ -901,7 +917,7 @@ async function listDir(res, q, cfg) {
     const items = names.map((n) => ({
       name: n, path: dir + '\\' + n, type: 'dir', size: 0, mtime: 0, ext: ''
     }));
-    sendJson(res, 200, { ok: true, path: dir, items });
+    sendJson(res, 200, { ok: true, path: dir, fast, items });
     return;
   }
   const st = await fs.promises.stat(dir);
@@ -909,16 +925,28 @@ async function listDir(res, q, cfg) {
 
   const ents = await fs.promises.readdir(dir, { withFileTypes: true });
   const items = [];
+  // realDir：父目录真实路径每目录解析一次；非符号链接条目的真实路径 = 父真实路径 + 条目名，
+  // 免逐条目 realpathSync（万级目录曾因此每条 0.12ms，2026-11-15 修）
+  let realDir = '';
+  if ((cfg.deniedPaths || []).length) {
+    try { realDir = path.win32.normalize(fs.realpathSync(dir)).replace(/[\\\/]+$/, ''); } catch (e) {}
+  }
   for (const ent of ents) {
     const full = path.win32.join(dir, ent.name);
-    if (isDenied(full, cfg)) continue;
+    const link = ent.isSymbolicLink();
+    if (isDenied(full, cfg, link || !realDir ? undefined : realDir + '\\' + ent.name)) continue;
     let type = 'other', size = 0, mtime = 0;
-    try {
-      const s = await fs.promises.stat(full);
-      type = s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other';
-      size = s.size;
-      mtime = s.mtimeMs;
-    } catch (e) {}
+    if (fast) {
+      // Dirent 自带类型（零系统调用）；符号链接/junction 需 stat 跟随判断
+      if (link) {
+        try {
+          const s = await fs.promises.stat(full);
+          type = s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other';
+        } catch (e) {}
+      } else {
+        type = ent.isDirectory() ? 'dir' : ent.isFile() ? 'file' : 'other';
+      }
+    }
     items.push({
       name: ent.name,
       path: full,
@@ -928,13 +956,34 @@ async function listDir(res, q, cfg) {
       ext: (path.win32.extname(ent.name) || '').toLowerCase()
     });
   }
+  if (!fast) {
+    // 消费式并发 stat（64 worker）：旧版逐条 await 是 N 次串行系统调用，万级目录耗时
+    // 随文件数线性膨胀（2026-11-15 卡顿主因）；并发批的批栅栏会被慢条目拖住，改
+    // 无栅栏消费式，快者多干
+    let idx = 0;
+    const workers = [];
+    for (let w = 0; w < 64 && w < items.length; w++) {
+      workers.push((async () => {
+        while (idx < items.length) {
+          const it = items[idx++];
+          try {
+            const s = await fs.promises.stat(it.path);
+            it.type = s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other';
+            it.size = s.size;
+            it.mtime = s.mtimeMs;
+          } catch (e) {}
+        }
+      })());
+    }
+    await Promise.all(workers);
+  }
   items.sort((a, b) => {
     if (a.type === 'dir' && b.type !== 'dir') return -1;
     if (b.type === 'dir' && a.type !== 'dir') return 1;
     return a.name.localeCompare(b.name, 'zh', { numeric: true });
   });
 
-  sendJson(res, 200, { ok: true, path: dir, items });
+  sendJson(res, 200, { ok: true, path: dir, fast, items });
 }
 
 async function statPath(res, q, cfg) {
@@ -946,6 +995,26 @@ async function statPath(res, q, cfg) {
     size: s.size, mtime: s.mtimeMs, ctime: s.ctimeMs,
     ext: (path.win32.extname(file) || '').toLowerCase()
   });
+}
+
+// 批量 stat：两阶段加载的第二阶段——前端分批补齐 fast 列表的 size/mtime。
+// 单批上限 500；逐路径过 resolveAllowedPath + isDenied，与 /api/ls 同门禁，只读（2026-11-15）
+async function statBatchOp(res, data, cfg) {
+  const paths = Array.isArray(data && data.paths) ? data.paths.slice(0, 500) : [];
+  const out = await Promise.all(paths.map(async (p) => {
+    try {
+      const full = resolveAllowedPath(p, cfg);
+      if (isDenied(full, cfg)) return null;
+      const s = await fs.promises.stat(full);
+      return {
+        path: full,
+        type: s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other',
+        size: s.size,
+        mtime: s.mtimeMs
+      };
+    } catch (e) { return null; }
+  }));
+  sendJson(res, 200, { ok: true, items: out.filter(Boolean) });
 }
 
 // —— 文本解码：识别 BOM（UTF-8 / UTF-16 LE / UTF-16 BE），修复 UTF-16 文本被误判为 binary ——
@@ -2325,11 +2394,16 @@ async function searchOp(res, q, cfg) {
     if (results.length >= LIMIT) return;
     let entries;
     try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
+    // 父目录真实路径每层解析一次，免逐条目 realpathSync（同 listDir，2026-11-15 修）
+    let realDir = '';
+    if ((cfg.deniedPaths || []).length) {
+      try { realDir = path.win32.normalize(fs.realpathSync(dir)).replace(/[\\\/]+$/, ''); } catch (e) {}
+    }
     for (const ent of entries) {
       if (results.length >= LIMIT) return;
       if (ent.isSymbolicLink()) continue;   // 防链接环
       const full = path.win32.join(dir, ent.name);
-      if (isDenied(full, cfg)) continue;
+      if (isDenied(full, cfg, realDir ? realDir + '\\' + ent.name : undefined)) continue;
       if (ent.isDirectory()) {
         if (ent.name.toLowerCase().includes(kw)) {
           results.push({ name: path.win32.relative(root, full), path: full, type: 'dir', size: 0, mtime: 0, ext: '' });

@@ -293,7 +293,18 @@ html-FileNest/
 
 ## Changelog
 
-**v2.1.0.1 (Latest)**
+**v2.1.0.2 (Latest)**
+
+**New features**
+- **Two-phase directory loading ("open first, stream details")**: `GET /api/ls?fast=1` returns the listing immediately with names/types only (zero per-file `stat` calls — types come from the directory read itself), and the new `POST /api/stat-batch` endpoint fills in size/modified time in batches of 300 while the folder is already open and usable. Large folders that used to block for seconds now open in a fraction of a second; size/modified columns show "…" until backfilled, and the list re-sorts once when backfill completes. Plain `/api/ls` (no `fast`) behaves exactly as before, including the response fields.
+- `POST /api/stat-batch`: read-only batched `stat` lookup (max 500 paths per request) with the same path guards as `/api/ls`.
+
+**Improvements**
+- Directory listing metadata lookup is now concurrent (batches of 200) instead of one-by-one serial `stat`; listing time no longer scales with per-file latency — on a 10,000-file folder this step dropped from ~700ms to ~200ms locally, far more on slow disks/UNC shares (it was ~73% of total listing time).
+- The Web UI enters the folder on the first response and backfills size/modified columns progressively without blocking interaction; huge lists render through `DocumentFragment` aggregation to avoid thousands of reflows.
+- Filesystem thread pool widened to 64 (`UV_THREADPOOL_SIZE=64`) in the service process and `start.vbs`, so slow or unreachable network shares can no longer monopolize the default 4-thread pool; existing `start.vbs` files are upgraded automatically on deploy.
+
+**v2.1.0.1**
 
 **New features**
 - **Path blacklist (`deniedPaths`) for tamper-proofing**: files and folders on the blacklist cannot be browsed, searched, read or modified — they are hidden from directory listings and search results, and every operation (preview, download, open, save, rename, move, copy, delete, pack) rejects them with 403. The app's own install directory (config, certificates, cache) is always denied and cannot be un-denied (the only exception is the app-managed recycle bin, which stays readable for the recycle UI's preview and download — writes remain blocked); `deniedPaths` in `config.json` adds more entries and takes effect on hot reload. Junction/symlink redirects into denied trees are blocked via real-path resolution.

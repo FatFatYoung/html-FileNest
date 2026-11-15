@@ -1022,6 +1022,17 @@ body {
     render();
   }
 
+  function appendItems(parent, items) {
+    // DocumentFragment 聚合：万条文件逐条 appendChild 触发上万次重排，批量一次接入
+    // （2026-11-15 大目录渲染优化）
+    if (items.length < 50) {
+      items.forEach(function (it) { parent.appendChild(makeItemEl(it)); });
+      return;
+    }
+    var frag = document.createDocumentFragment();
+    items.forEach(function (it) { frag.appendChild(makeItemEl(it)); });
+    parent.appendChild(frag);
+  }
   function renderList() {
     listEl.innerHTML = '';
     listEl.className = 'file-list ' + (state.viewMode === 'grid' ? 'grid-view' : 'list-view');
@@ -1056,7 +1067,7 @@ body {
       // 其余细化到按后缀名分组（数量多的在前）
       var entryItems = [], groupedItems = [];
       items.forEach(function (x) { (x._entry ? entryItems : groupedItems).push(x); });
-      entryItems.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+      appendItems(listEl, entryItems);
       var buckets = {};
       groupedItems.forEach(function (x) {
         var c = itemCategory(x);
@@ -1078,10 +1089,10 @@ body {
           renderList();
         };
         listEl.appendChild(h);
-        if (!groupCollapsed[cat]) buckets[cat].forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+        if (!groupCollapsed[cat]) appendItems(listEl, buckets[cat]);
       });
     } else {
-      items.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+      appendItems(listEl, items);
     }
     // —— 我的收藏模块（所有位置页，正常盘符下另起一行的新模块） ——
     if (state.current && state.current.path === '*') {
@@ -1092,7 +1103,7 @@ body {
       fh.textContent = tr('我的收藏（{n}）', { n: favs.length });
       listEl.appendChild(fh);
       if (favs.length) {
-        favs.forEach(function (item) { listEl.appendChild(makeItemEl(item)); });
+        appendItems(listEl, favs);
       } else {
         var tip = document.createElement('div');
         tip.className = 'empty';
@@ -1411,9 +1422,12 @@ body {
     } else {
       div.innerHTML = '<div class="icon">' + getIcon(item) + '</div>' +
         '<div class="name"></div>' +
-        '<div class="size">' + (item.type === 'dir' ? '—' : formatSize(item.size)) + '</div>' +
-        '<div class="time">' + (item.mtime ? formatTime(item.mtime) : '') + '</div>';
+        '<div class="size">' + (item.type === 'dir' ? '—' : (item._pending ? '…' : formatSize(item.size))) + '</div>' +
+        '<div class="time">' + (item._pending ? '…' : (item.mtime ? formatTime(item.mtime) : '')) + '</div>';
       div.querySelector('.name').textContent = item.name;
+      // 流式补齐：留单元格引用，stat-batch 回填后就地更新（2026-11-15 大目录优化）
+      item._sizeEl = div.querySelector('.size');
+      item._timeEl = div.querySelector('.time');
     }
     div.onclick = function (e) {
       if (item._recycle) { selectItem(item); if (item.type !== 'dir') previewFile(item); return; }
@@ -1514,10 +1528,11 @@ body {
         showToast(tr('打开失败: ') + e.message, 'error');
       });
     }
-    // —— 普通目录 ——
-    return apiGet('/api/ls?path=' + enc(target.path)).then(function (r) {
+    // —— 普通目录（两阶段：fast 首包秒进，size/时间后台分批补齐，2026-11-15）——
+    return apiGet('/api/ls?path=' + enc(target.path) + '&fast=1').then(function (r) {
       state.current = { path: r.path, source: target.source };
       state.items = r.items || [];
+      if (r.fast) state.items.forEach(function (it) { it._pending = true; });
       state.selected = null; state.multi = []; state.anchor = null;
       state.filter = '';
       $('search').value = '';
@@ -1527,9 +1542,48 @@ body {
         state.historyIdx = state.history.length - 1;
       }
       render();
+      if (r.fast) fillStats(state.items);
     }).catch(function (e) {
       showToast(tr('打开失败: ') + e.message, 'error');
     });
+  }
+  // —— 流式补齐：分批 POST /api/stat-batch 回填 fast 列表的 size/mtime（2026-11-15）——
+  var fillSeq = 0;
+  function fillStats(items) {
+    var seq = ++fillSeq;
+    var byPath = {}, pend = [];
+    items.forEach(function (it) {
+      byPath[it.path] = it;
+      if (it._pending) pend.push(it.path);
+    });
+    if (!pend.length) return;
+    var BATCH = 300;
+    function step(i) {
+      if (seq !== fillSeq) return;   // 已导航到别处，中止补齐
+      if (i >= pend.length) {
+        // 全部到齐重排一次（默认按修改时间排序依赖补齐数据），保留滚动位置
+        var top = listEl.scrollTop;
+        renderList();
+        listEl.scrollTop = top;
+        return;
+      }
+      apiPost('/api/stat-batch', { paths: pend.slice(i, i + BATCH) }).then(function (r) {
+        if (seq !== fillSeq) return;
+        (r.items || []).forEach(function (s) {
+          var it = byPath[s.path];
+          if (!it) return;
+          it.size = s.size; it.mtime = s.mtime; it._pending = false;
+          if (it._sizeEl && it._sizeEl.isConnected) {
+            it._sizeEl.textContent = (it.type === 'dir' ? '—' : formatSize(it.size));
+          }
+          if (it._timeEl && it._timeEl.isConnected) {
+            it._timeEl.textContent = it.mtime ? formatTime(it.mtime) : '';
+          }
+        });
+        step(i + BATCH);
+      }).catch(function () {});   // 补齐失败不打扰，列表已可用
+    }
+    step(0);
   }
   function navBack() {
     if (state.historyIdx <= 0) return;
