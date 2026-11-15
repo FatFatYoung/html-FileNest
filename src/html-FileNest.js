@@ -1881,6 +1881,7 @@ function Get-IconB64b([string]$ext) {
 
 $items = New-Object System.Collections.Generic.List[object]
 $extDef = @{}        # ext -> 默认 ProgID（按 HKCU > 已加载用户 > HKLM 优先级，先到先得）
+$extPer = @{}        # ext -> PerceivedType（Windows 对伪注册的门禁：text/document/image 才进菜单）
 $extUc   = @{}       # ext -> UserChoice ProgId 列表（文件类型默认打开方式 = Windows 菜单取名的第一来源）
 $cacheSet = @{}      # Explorer 新建菜单缓存（Windows 菜单自己维护的清单）
 
@@ -1980,6 +1981,8 @@ foreach ($cl in $roots) {
     if (-not $ek) { continue }
     $prog = [string]$ek.GetValue('')
     if ($prog -and (-not $extDef.ContainsKey($n))) { $extDef[$n] = $prog }
+    $per = [string]$ek.GetValue('PerceivedType')
+    if ($per -and (-not $extPer.ContainsKey($n))) { $extPer[$n] = $per }
     $sn = $ek.OpenSubKey('ShellNew')
     if ($sn) { Add-SnEntry $cl $sn $n $prog 0; $sn.Close() }
     foreach ($sub in $ek.GetSubKeyNames()) {
@@ -2053,10 +2056,11 @@ foreach ($k in ($allExt | Sort-Object)) {
   if ((-not $def) -and (-not $ucList)) { continue }                                   # ① 无默认 ProgID 不进菜单（.contact）
   if ($it -and $it.kind -eq 'command') { continue }                                   # ② 仅 Command 创建方式不进菜单
   if ($it -and $it.hasHandler -and $it.hasNullFile -and (-not $it.itemName) -and (-not $it.menuText)) { continue }  # ③ Handler+NullFile 无标签不进菜单（.library-ms）
-  if ($it -and $it.kind -eq 'none') {                                                 # ④ 无创建值的空壳注册：
-    $hasLabel = [bool]($it.itemName -or $it.menuText)
-    if ($hasLabel -and (-not $cacheSet.ContainsKey($k))) { continue }                  #    带标签但缓存不认识 -> 不进（压缩文件夹形状）
-  }                                                                                  #    无标签空壳（文本文档/BMP 形状）-> 进，建空文件
+  $perceived = ''
+  foreach ($e2 in $extPer.Keys) { if ($e2.ToLower() -eq $k) { $perceived = $extPer[$e2]; break } }
+  if ($it -and ($it.kind -eq 'none' -or $it.kind -eq 'handler')) {                    # ④ 伪注册（无创建值/仅 Handler）：
+    if ($perceived -notin @('text', 'document', 'image')) { continue }                #    仅 文本/文档/图像 感知类型进菜单
+  }                                                                                  #    （文本文档 text、BMP 图像 image 进；压缩 compressed、FontCreator 无 -> 不进）
   # —— 名称链条（与 Windows 菜单逐字一致）——
   # UserChoice 默认打开方式 -> 扩展名默认 ProgID -> 菜单文字 MenuText -> 所选注册 ProgID -> ItemName -> 扩展名
   $name = ''
