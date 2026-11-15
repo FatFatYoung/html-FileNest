@@ -1051,12 +1051,23 @@ body {
     items.forEach(function (it) { frag.appendChild(makeItemEl(it)); });
     parent.appendChild(frag);
   }
+  // —— 排序/过滤视图缓存：同一批条目+同参数不重复排序（万条 localeCompare
+  //    每次渲染 20-50ms，进/返回频繁时是卡顿源之一，2026-11-15） ——
+  function cachedView() {
+    var c = state._viewCache;
+    if (c && c.items === state.items && c.filter === state.filter &&
+        c.key === state.sortKey && c.asc === state.sortAsc) return c.out;
+    var out = sortItems(filteredItems());
+    state._viewCache = { items: state.items, filter: state.filter, key: state.sortKey, asc: state.sortAsc, out: out };
+    return out;
+  }
+
   function renderList() {
     var keepTop = listEl.scrollTop;
     listEl.onscroll = null;
     listEl.innerHTML = '';
     listEl.className = 'file-list ' + (state.viewMode === 'grid' ? 'grid-view' : 'list-view');
-    var items = sortItems(filteredItems());
+    var items = cachedView();
     // —— 压缩包浏览视图：顶部常驻"解压到当前文件夹"按钮，一步到位 ——
     var pCur = (state.current && state.current.path) || '';
     var zSep = pCur.indexOf('::');
@@ -1707,6 +1718,7 @@ body {
         // 并写入目录缓存（同对象引用，后退/前进秒开）
         renderList();   // renderList 自带滚动位置保持
         cachePut(dirPath, items);
+        state._viewCache = null;   // size/mtime 已变，排序视图失效
         return;
       }
       apiPost('/api/stat-batch', { paths: pend.slice(i, i + BATCH) }, navAbort ? navAbort.signal : undefined).then(function (r) {
