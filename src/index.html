@@ -599,19 +599,20 @@ body {
   var fileInput = $('file-input');
   var contextMenuEl = $('context-menu');
 
-  function apiGet(url) {
-    return fetch(url, { credentials: 'same-origin' }).then(function (r) {
+  function apiGet(url, signal) {
+    return fetch(url, { credentials: 'same-origin', signal: signal }).then(function (r) {
       return r.json().then(function (d) {
         if (!d.ok) throw new Error(d.error || 'request failed');
         return d;
       });
     });
   }
-  function apiPost(url, body) {
+  function apiPost(url, body, signal) {
     return fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
+      signal: signal,
       body: JSON.stringify(body)
     }).then(function (r) {
       return r.json().then(function (d) {
@@ -1016,7 +1017,8 @@ body {
         .catch(function (e) { showToast(tr('操作失败: ') + e.message, 'error'); });
     }
   }
-  function showFavorites() {
+  function showFavorites(gen) {
+    if (gen === undefined) gen = beginNav();
     loadFavorites();
     state.current = { path: '*fav*', source: 'default' };
     state.items = favItems();
@@ -1286,8 +1288,10 @@ body {
   }
 
   // —— 回收站视图 ——
-  function showRecycle() {
-    return apiGet('/api/recycle').then(function (r) {
+  function showRecycle(gen) {
+    if (gen === undefined) gen = beginNav();
+    return apiGet('/api/recycle', navAbort ? navAbort.signal : undefined).then(function (r) {
+      if (gen !== navGen) return;
       state.current = { path: '*recycle*', source: 'local' };
       state.items = (r.items || []).map(function (it) {
         return {
@@ -1370,11 +1374,13 @@ body {
   }
 
   // —— 递归搜索 ——
-  function runSearch(q, root) {
+  function runSearch(q, root, gen) {
     if (!root || !root.path || root.path.indexOf('*') === 0) { showToast(tr('请先打开一个文件夹再搜索'), 'error'); return; }
+    if (gen === undefined) gen = beginNav();
     state.searchQ = q; state.searchRoot = root;
     showToast(tr('搜索中…'));
-    return apiGet('/api/search?path=' + enc(root.path) + '&q=' + enc(q)).then(function (r) {
+    return apiGet('/api/search?path=' + enc(root.path) + '&q=' + enc(q), navAbort ? navAbort.signal : undefined).then(function (r) {
+      if (gen !== navGen) return;
       state.current = { path: '*search*', source: root.source || 'local' };
       state.items = r.results || [];
       clearSelection();
@@ -1387,6 +1393,7 @@ body {
   // —— 两阶段搜索：第一阶段只搜当前目录（不递归），完毕后询问是否继续搜索下级目录 ——
   function searchPhase1(q, root) {
     if (!root || !root.path || root.path.indexOf('*') === 0) { showToast(tr('请先打开一个文件夹再搜索'), 'error'); return; }
+    beginNav();   // 新操作终止在途操作（2026-11-15 叠加塞车修复）
     state.searchQ = q; state.searchRoot = root;
     // 缓存当前目录条目（进入搜索视图后 state.items 会被结果覆盖）
     if (!(state.searchBase && state.searchBase.path === root.path)) {
@@ -1492,10 +1499,11 @@ body {
   }
   function navTo(target, pushHistory) {
     if (pushHistory === undefined) pushHistory = true;
-    if (target.path === '*') return showDrives();
-    if (target.path === '*fav*') return showFavorites();
-    if (target.path === '*recycle*') return showRecycle();
-    if (target.path === '*search*') return runSearch(state.searchQ, state.searchRoot);
+    var gen = beginNav();
+    if (target.path === '*') return showDrives(gen);
+    if (target.path === '*fav*') return showFavorites(gen);
+    if (target.path === '*recycle*') return showRecycle(gen);
+    if (target.path === '*search*') return runSearch(state.searchQ, state.searchRoot, gen);
     // —— ZIP 虚拟路径（path.zip::subdir）——
     var zipSep = target.path.indexOf('::');
     if (zipSep > 0) {
@@ -1547,7 +1555,8 @@ body {
       render();
       return Promise.resolve();
     }
-    return apiGet('/api/ls?path=' + enc(target.path) + '&fast=1').then(function (r) {
+    return apiGet('/api/ls?path=' + enc(target.path) + '&fast=1', navAbort ? navAbort.signal : undefined).then(function (r) {
+      if (gen !== navGen) return;   // 迟到响应丢弃（已导航到别处）
       state.current = { path: r.path, source: target.source };
       state.items = r.items || [];
       if (r.fast) state.items.forEach(function (it) { it._pending = true; });
@@ -1561,14 +1570,34 @@ body {
       }
       render();
       if (r.fast) fillStats(state.items, r.path);
-      else lsCache[r.path] = { items: state.items, ts: Date.now() };
+      else cachePut(r.path, state.items);
     }).catch(function (e) {
+      if (gen !== navGen) return;   // 中止/过期的错误不打扰
       showToast(tr('打开失败: ') + e.message, 'error');
     });
   }
   // —— 流式补齐：分批 POST /api/stat-batch 回填 fast 列表的 size/mtime（2026-11-15）——
   // —— 目录缓存：已看过的目录秒开（后退/前进不重发请求），写操作后整体失效 ——
   var lsCache = {};
+  function cachePut(path, items) {
+    // 过期清理 + 限量 20 目录：防长时间使用内存累积（2026-11-15 逐渐卡顿修复）
+    var now = Date.now();
+    for (var k in lsCache) { if (now - lsCache[k].ts > 90000) delete lsCache[k]; }
+    var keys = Object.keys(lsCache);
+    while (keys.length >= 20) { delete lsCache[keys.shift()]; }
+    lsCache[path] = { items: items, ts: now };
+  }
+  // —— 导航代际：新操作强制终止旧操作——作废在途补齐批次、中止在途请求、丢弃
+  //    迟到响应。快速进入/返回时旧操作不再叠加塞车（2026-11-15）——
+  var navGen = 0;
+  var navAbort = null;
+  function beginNav() {
+    var gen = ++navGen;
+    fillSeq++;   // 作废一切在途 fillStats 批次
+    if (navAbort) { try { navAbort.abort(); } catch (e) {} }
+    navAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    return gen;
+  }
   var fillSeq = 0;
   function fillStats(items, dirPath) {
     var seq = ++fillSeq;
@@ -1587,10 +1616,10 @@ body {
         var top = listEl.scrollTop;
         renderList();
         listEl.scrollTop = top;
-        lsCache[dirPath] = { items: items, ts: Date.now() };
+        cachePut(dirPath, items);
         return;
       }
-      apiPost('/api/stat-batch', { paths: pend.slice(i, i + BATCH) }).then(function (r) {
+      apiPost('/api/stat-batch', { paths: pend.slice(i, i + BATCH) }, navAbort ? navAbort.signal : undefined).then(function (r) {
         if (seq !== fillSeq) return;
         (r.items || []).forEach(function (s) {
           var it = byPath[s.path];
@@ -1604,7 +1633,7 @@ body {
           }
         });
         step(i + BATCH);
-      }).catch(function () {});   // 补齐失败不打扰，列表已可用
+      }).catch(function () {});   // 补齐失败/中止不打扰，列表已可用
     }
     step(0);
   }
@@ -1642,8 +1671,10 @@ body {
     if (!state.current) return;
     return navTo({ path: state.current.path, source: state.current.source }, false);
   }
-  function showDrives() {
-    return apiGet('/api/drives').then(function (r) {
+  function showDrives(gen) {
+    if (gen === undefined) gen = beginNav();
+    return apiGet('/api/drives', navAbort ? navAbort.signal : undefined).then(function (r) {
+      if (gen !== navGen) return;
       state.current = { path: '*', source: 'default' };
       state.items = r.drives.map(function (d) {
         return { name: d, path: d, type: 'dir', size: 0, mtime: 0, ext: '', _entry: true };
