@@ -145,6 +145,7 @@ Edit `C:\html-FileNest\config.json`:
   "cacheMaxAgeHours": 24,
   "downloadTimeoutMs": 120000,
   "allowedHosts": [],
+  "deniedPaths": [],
   "security": {
     "requireLocalOrigin": true,
     "allowedOrigins": [],
@@ -160,6 +161,7 @@ Edit `C:\html-FileNest\config.json`:
 | `ports` | HTTP/HTTPS listening ports (default: 20000/20443) |
 | `sources.*.roots` | Allowed root paths. `"*"` = all drives. Use `"C:\\Users\\me\\*"` to restrict scope |
 | `allowedExtensions` | Whitelist of allowed extensions. Empty array = no restriction |
+| `deniedPaths` | Path blacklist: listed files/folders cannot be browsed, searched, read or modified (hidden from listings too). The app's own install directory is always denied |
 | `blockExecutables` | Reject executable files (default: true) |
 | `security.allowedOrigins` | Webpage allowlist for API callers. The app's own UI origin (localhost/127.0.0.1 on the configured ports; defaults 20000/20443; same-origin calls with matching `Host` included) is always allowed and not subject to the list; entries are full origins (`http://192.168.1.10`: exact scheme+host+port) or bare domains (`192.168.1.10`: exact hostname, any scheme/port); exact match only - no wildcards, no subdomain inheritance (`b.a.com` needs its own entry); empty list (default) rejects every other site; `Origin: null` is always rejected |
 | `security.requireLocalOrigin` | Only accept requests from localhost (default: true) |

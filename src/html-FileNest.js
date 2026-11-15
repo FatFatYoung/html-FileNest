@@ -28,7 +28,9 @@ process.on('uncaughtException', (err) => {
 const APP_NAME    = 'html-FileNest';
 const SERVICE_VER = '2.1.0.1';
 const HOST        = '127.0.0.1';
-const INSTALL_DIR = 'C:\\html-FileNest';
+const INSTALL_DIR = process.env.FIN_INSTALL_DIR || 'C:\\html-FileNest';
+// 打包 exe 自身所在目录（便携运行时可能与 INSTALL_DIR 不同）；从源码运行时为 null
+const SELF_DIR = /html-FileNest\.exe$/i.test(process.execPath) ? path.dirname(process.execPath) : null;
 const EXE_PATH    = path.join(INSTALL_DIR, 'html-FileNest.exe');
 const CONFIG_PATH = path.join(INSTALL_DIR, 'config.json');
 const PFX_PATH    = path.join(INSTALL_DIR, 'filenest.pfx');
@@ -58,6 +60,7 @@ const DEFAULT_CONFIG = {
   cacheMaxAgeHours: 24,
   downloadTimeoutMs: 120000,
   allowedHosts: [],
+  deniedPaths: [],
   security: {
     requireLocalOrigin: true,
     allowedOrigins: [],
@@ -103,6 +106,19 @@ function normalizeConfig(cfg) {
   if (c.security.requireLocalOrigin === undefined) c.security.requireLocalOrigin = true;
   if (!Array.isArray(c.security.allowedOrigins)) c.security.allowedOrigins = [];
   c.security.authToken = c.security.authToken || '';
+  // —— 路径黑名单（防篡改）：内置安装目录/自身目录始终生效（配置可追加、不可移除） ——
+  const deny = [];
+  const pushDeny = (p) => {
+    if (!p) return;
+    try {
+      const n = path.win32.normalize(String(p)).replace(/[\\\/]+$/, '').toLowerCase();
+      if (n && n !== '\\' && deny.indexOf(n) < 0) deny.push(n);
+    } catch (_) {}
+  };
+  pushDeny(INSTALL_DIR);
+  pushDeny(SELF_DIR);
+  for (const p of (Array.isArray(c.deniedPaths) ? c.deniedPaths : [])) pushDeny(p);
+  c.deniedPaths = deny;
 
   // ${ENV} 展开加白名单（#23）：仅预定义安全变量可展开，未知变量按空串处理，防环境变量值泄露
   const ENV_WHITELIST = new Set([
@@ -444,7 +460,7 @@ function handleRequest(req, res) {
 
   if (p === '/open' || p === '/exists' || p === '/reveal' || p === '/open-folder') {
     return handleFileOp(p, q, res, cfg).catch(err => {
-      sendJson(res, 500, { ok: false, error: String(err && err.message || err) });
+      sendJson(res, err && err.status || 500, { ok: false, error: String(err && err.message || err) });
     });
   }
 
@@ -585,7 +601,7 @@ async function handleApi(req, res, p, q, cfg) {
 
     sendJson(res, 405, { ok: false, error: 'method not allowed' });
   } catch (e) {
-    if (!res.headersSent) sendJson(res, 400, { ok: false, error: String(e.message || e) });
+    if (!res.headersSent) sendJson(res, e && e.status || 400, { ok: false, error: String(e.message || e) });
     else { try { res.end(); } catch (_) {} }
   }
 }
@@ -692,6 +708,25 @@ async function listShares(hostPath) {
   return shares;
 }
 
+// —— 路径黑名单（防篡改）：命中即拒绝 ——
+function isDenied(absNorm, cfg) {
+  const list = cfg.deniedPaths || [];
+  if (!list.length) return false;
+  const nkey = (p) => path.win32.normalize(String(p)).replace(/[\\\/]+$/, '').toLowerCase();
+  const nl = nkey(absNorm);
+  for (const d of list) {
+    if (d && (nl === d || nl.startsWith(d + '\\'))) return true;
+  }
+  // 真实路径兜底：junction/符号链接指向黑名单目录时同样拒绝
+  try {
+    const rl = nkey(fs.realpathSync(absNorm));
+    for (const d of list) {
+      if (d && (rl === d || rl.startsWith(d + '\\'))) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
 function resolveAllowedPath(pathStr, cfg) {
   const s = String(pathStr || '');
   if (!s) throw new Error('path required');
@@ -701,6 +736,11 @@ function resolveAllowedPath(pathStr, cfg) {
   catch (e) { throw new Error('invalid path'); }
   if (!norm.startsWith('\\\\') && !/^[A-Za-z]:\\/.test(norm)) {
     throw new Error('must be absolute path');
+  }
+  if (isDenied(norm, cfg)) {
+    const e = new Error('path is denied by blacklist');
+    e.status = 403;
+    throw e;
   }
   for (const name of Object.keys(cfg.sources)) {
     const src = cfg.sources[name];
@@ -728,6 +768,7 @@ function listRoots(res, cfg) {
         expanded = r.replace(/[\\\/]\*+$/, '');
       }
       if (!expanded) continue;
+      if (isDenied(expanded, cfg)) continue;
       const key = name + '|' + expanded.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -823,6 +864,7 @@ async function desktopInfo(res, cfg) {
   const items = [];
   for (const ent of ents) {
     const full = path.win32.join(dir, ent.name);
+    if (isDenied(full, cfg)) continue;
     let type = 'other', size = 0, mtime = 0;
     try {
       const s = await fs.promises.stat(full);
@@ -844,7 +886,7 @@ async function listDir(res, q, cfg) {
   // UNC 主机根（\\host）不能用 readdir 列目录——Windows 共享枚举是另一套 API，
   // 用 net view 列出主机上的可见共享，以目录形式呈现（2026-11-13）
   if (isBareHost(dir)) {
-    const names = await listShares(dir);
+    const names = (await listShares(dir)).filter(n => !isDenied(dir + '\\' + n, cfg));
     const items = names.map((n) => ({
       name: n, path: dir + '\\' + n, type: 'dir', size: 0, mtime: 0, ext: ''
     }));
@@ -858,6 +900,7 @@ async function listDir(res, q, cfg) {
   const items = [];
   for (const ent of ents) {
     const full = path.win32.join(dir, ent.name);
+    if (isDenied(full, cfg)) continue;
     let type = 'other', size = 0, mtime = 0;
     try {
       const s = await fs.promises.stat(full);
@@ -2275,6 +2318,7 @@ async function searchOp(res, q, cfg) {
       if (results.length >= LIMIT) return;
       if (ent.isSymbolicLink()) continue;   // 防链接环
       const full = path.win32.join(dir, ent.name);
+      if (isDenied(full, cfg)) continue;
       if (ent.isDirectory()) {
         if (ent.name.toLowerCase().includes(kw)) {
           results.push({ name: path.win32.relative(root, full), path: full, type: 'dir', size: 0, mtime: 0, ext: '' });
