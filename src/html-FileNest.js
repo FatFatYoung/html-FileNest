@@ -581,6 +581,7 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/raw')    return await streamFile(req, res, q, cfg);
       if (p === '/api/read')   return await readTextFile(res, q, cfg);
       if (p === '/api/office-preview') return await officePreview(res, q, cfg);
+      if (p === '/api/thumb') return await thumbFile(res, q, cfg);
       if (p === '/api/archive-list') return await archiveList(res, q, cfg);
       if (p === '/api/archive-extract') return await archiveExtract(req, res, q, cfg);
       return sendJson(res, 404, { ok: false, error: 'not found' });
@@ -1711,6 +1712,148 @@ function extractPptText(buf) {
   });
 
   return filtered.length > 0 ? [filtered.join('\n')] : ['(未能提取文本内容，请用系统程序打开)'];
+}
+
+// —— 文件缩略图 /api/thumb（2026-11-16）：文件列表图标用低清小图（64px 长边）——
+// PSD/PSB 复用内嵌 JPEG 提取（资源区段在文件头部，只读头 32MB）；
+// AI 尽力提取（PDF 兼容型扫内嵌 JPEG / DOS EPS 头取 TIFF 预览转 JPEG）；
+// 图片走 GDI+ 缩放（PowerShell System.Drawing）存 cacheDir/thumbs（键含 mtime+size）；
+// svg 原样回传（浏览器自缩放）。提不出缩略图回 404，前端保留原图标。
+const THUMB_EDGE = 64;
+
+function readHead(file, n) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(n);
+    const got = fs.readSync(fd, buf, 0, n, 0);
+    return buf.subarray(0, got);
+  } finally { try { fs.closeSync(fd); } catch (e) {} }
+}
+
+function scanFirstJpeg(buf) {
+  const soi = buf.indexOf(Buffer.from([0xFF, 0xD8, 0xFF]));
+  if (soi < 0) return null;
+  for (let i = soi + 3; i + 1 < buf.length; i++) {
+    if (buf[i] === 0xFF && buf[i + 1] === 0xD9) return buf.subarray(soi, i + 2);
+  }
+  return null;
+}
+
+// DOS EPS 二进制头：magic(4)=C5 D3 D6 C6 + 5 组 uint32 偏移/长度 + uint16 校验，
+// TIFF 预览偏移/长度在第 20~27 字节；字节序双向验证（TIFF 魔数 II*/MM* 对得上才算）
+function extractEpsTiff(head) {
+  if (head.length < 30) return null;
+  if (!(head[0] === 0xC5 && head[1] === 0xD3 && head[2] === 0xD6 && head[3] === 0xC6)) return null;
+  for (const be of [true, false]) {
+    const off = be ? head.readUInt32BE(20) : head.readUInt32LE(20);
+    const len = be ? head.readUInt32BE(24) : head.readUInt32LE(24);
+    if (off <= 0 || len <= 24 || off + len > head.length) continue;
+    const sig = head.subarray(off, off + 4);
+    const tiff = (sig[0] === 0x49 && sig[1] === 0x49 && sig[2] === 0x2A && sig[3] === 0x00) ||
+                 (sig[0] === 0x4D && sig[1] === 0x4D && sig[2] === 0x00 && sig[3] === 0x2A);
+    if (tiff) return head.subarray(off, off + len);
+  }
+  return null;
+}
+
+// GDI+ 缩放到 64px 长边 JPEG。EncodedCommand 传脚本（路径引号/特殊字符零注入），
+// 异步子进程 + 15s 强杀（Bun.spawn，同 listShares 模式）；成功写 outFile 返回 true
+async function gdiThumb(srcFile, outFile) {
+  const s = String(srcFile).replace(/'/g, "''");
+  const o = String(outFile).replace(/'/g, "''");
+  const ps = [
+    'Add-Type -AssemblyName System.Drawing',
+    "$src = New-Object System.Drawing.Bitmap('" + s + "')",
+    '$max = ' + THUMB_EDGE,
+    '$w = $src.Width; $h = $src.Height',
+    'if ($w -lt 1 -or $h -lt 1) { exit 1 }',
+    'if ($w -ge $h) { $nw = $max; $nh = [Math]::Max(1, [int]($h * $max / $w)) } else { $nh = $max; $nw = [Math]::Max(1, [int]($w * $max / $h)) }',
+    '$dst = New-Object System.Drawing.Bitmap($nw, $nh)',
+    '$g = [System.Drawing.Graphics]::FromImage($dst)',
+    '$g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic',
+    '$g.DrawImage($src, 0, 0, $nw, $nh)',
+    '$g.Dispose(); $src.Dispose()',
+    "$enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }",
+    '$ep = New-Object System.Drawing.Imaging.EncoderParameters(1)',
+    '$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]75)',
+    "$dst.Save('" + o + "', $enc, $ep)",
+    '$dst.Dispose()'
+  ].join('\n');
+  try {
+    const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+      Buffer.from(ps, 'utf16le').toString('base64')], { stdout: 'ignore', stderr: 'ignore' });
+    const killTimer = setTimeout(() => { try { proc.kill(); } catch (e) {} }, 15000);
+    const code = await proc.exited;
+    clearTimeout(killTimer);
+    return code === 0 && fs.existsSync(outFile);
+  } catch (e) { return false; }
+}
+
+function sendImageFile(res, file, mime) {
+  const buf = fs.readFileSync(file);
+  res.writeHead(200, {
+    'Content-Type': mime,
+    'Content-Length': buf.length,
+    'Cache-Control': 'private, max-age=86400'
+  });
+  res.end(buf);
+}
+
+async function thumbFile(res, q, cfg) {
+  const file = resolveAllowedPath(q.path, cfg, {});
+  const chk = checkExtension(file, cfg);
+  if (!chk.ok) return sendJson(res, 403, { ok: false, error: chk.reason });
+  const st = await fs.promises.stat(file);
+  if (!st.isFile()) throw new Error('not a file');
+  const ext = path.extname(file).toLowerCase();
+  const MIME = { '.svg': 'image/svg+xml', '.webp': 'image/webp', '.avif': 'image/avif', '.png': 'image/png', '.gif': 'image/gif', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.ico': 'image/x-icon' };
+
+  // svg 原样回传（浏览器自缩放），限 2MB
+  if (ext === '.svg') {
+    if (st.size > 2 * 1048576) return sendJson(res, 404, { ok: false, error: 'too large' });
+    return sendImageFile(res, file, MIME[ext]);
+  }
+
+  const tdir = path.join(cfg.cacheDir, 'thumbs');
+  if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
+  const key = crypto.createHash('sha1').update(file + '|' + st.mtimeMs + '|' + st.size).digest('hex').slice(0, 20);
+  const outFile = path.join(tdir, key + '.jpg');
+  if (fs.existsSync(outFile)) return sendImageFile(res, outFile, 'image/jpeg');
+
+  const head = readHead(file, ext === '.ai' ? 4 * 1048576 : 32 * 1048576);
+
+  // PSD/PSB：内嵌 JPEG 缩略图（1033/1036 资源）
+  if (ext === '.psd' || ext === '.psb') {
+    const thumb = extractPsdThumbnail(head);
+    if (!thumb) return sendJson(res, 404, { ok: false, error: 'no embedded thumbnail' });
+    fs.writeFileSync(outFile, thumb);
+    return sendImageFile(res, outFile, 'image/jpeg');
+  }
+
+  // AI：PDF 兼容型扫内嵌 JPEG；DOS EPS 头 TIFF 预览转 JPEG
+  if (ext === '.ai') {
+    if (head.subarray(0, 5).toString('ascii') === '%PDF-') {
+      const jpg = scanFirstJpeg(head);
+      if (jpg) { fs.writeFileSync(outFile, jpg); return sendImageFile(res, outFile, 'image/jpeg'); }
+      return sendJson(res, 404, { ok: false, error: 'no embedded preview' });
+    }
+    const tif = extractEpsTiff(head);
+    if (tif && tif.length < 20 * 1048576) {
+      const tifTmp = path.join(tdir, key + '.tif');
+      fs.writeFileSync(tifTmp, tif);
+      const ok = await gdiThumb(tifTmp, outFile);
+      try { fs.unlinkSync(tifTmp); } catch (e) {}
+      if (ok) return sendImageFile(res, outFile, 'image/jpeg');
+    }
+    return sendJson(res, 404, { ok: false, error: 'no embedded preview' });
+  }
+
+  // 图片：GDI+ 缩放（200MB 以上不缩）；GDI+ 认不了但浏览器能显示的格式小文件原样回传
+  if (st.size <= 200 * 1048576 && await gdiThumb(file, outFile)) {
+    return sendImageFile(res, outFile, 'image/jpeg');
+  }
+  if (MIME[ext] && st.size < 2 * 1048576) return sendImageFile(res, file, MIME[ext]);
+  return sendJson(res, 404, { ok: false, error: 'no thumbnail' });
 }
 
 async function officePreview(res, q, cfg) {
