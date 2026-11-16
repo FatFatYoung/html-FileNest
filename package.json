@@ -2,6 +2,7 @@
   "name": "html-FileNest",
   "version": "2.1.0.4",
   "dependencies": {
+    "jimp": "^1.6.1",
     "jszip": "3.10.2",
     "mammoth": "1.13.0",
     "word-extractor": "^1.0.4",
