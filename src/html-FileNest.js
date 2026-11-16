@@ -1730,11 +1730,29 @@ function readHead(file, n) {
   } finally { try { fs.closeSync(fd); } catch (e) {} }
 }
 
+function readTail(file, n, size) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(n);
+    const got = fs.readSync(fd, buf, 0, n, Math.max(0, size - n));
+    return buf.subarray(0, got);
+  } finally { try { fs.closeSync(fd); } catch (e) {} }
+}
+
+// 扫描内嵌 JPEG（SOI..EOI）；小于 1KB 的碎片（图标噪声）跳过继续找
 function scanFirstJpeg(buf) {
-  const soi = buf.indexOf(Buffer.from([0xFF, 0xD8, 0xFF]));
-  if (soi < 0) return null;
-  for (let i = soi + 3; i + 1 < buf.length; i++) {
-    if (buf[i] === 0xFF && buf[i + 1] === 0xD9) return buf.subarray(soi, i + 2);
+  const sig = Buffer.from([0xFF, 0xD8, 0xFF]);
+  let p = 0;
+  while (p < buf.length) {
+    const soi = buf.indexOf(sig, p);
+    if (soi < 0) return null;
+    let end = -1;
+    for (let i = soi + 3; i + 1 < buf.length; i++) {
+      if (buf[i] === 0xFF && buf[i + 1] === 0xD9) { end = i + 2; break; }
+    }
+    if (end < 0) return null;
+    if (end - soi >= 1024) return buf.subarray(soi, end);
+    p = end;
   }
   return null;
 }
@@ -1756,6 +1774,84 @@ function extractEpsTiff(head) {
   return null;
 }
 
+// PSD raw RGB 缩略图（8BIM 1033/1036，format 1）：BGR 底行在前、行宽 widthBytes
+function extractPsdRawThumb(buf) {
+  if (buf.length < 30) return null;
+  if (buf[0] !== 0x38 || buf[1] !== 0x42 || buf[2] !== 0x50 || buf[3] !== 0x53) return null;
+  let offset = 26;
+  try {
+    const cmLen = buf.readUInt32BE(offset); offset += 4 + cmLen;
+    const irLen = buf.readUInt32BE(offset);
+    const end = Math.min(offset + 4 + irLen, buf.length);
+    offset += 4;
+    while (offset + 12 < end) {
+      if (buf[offset] !== 0x38 || buf[offset + 1] !== 0x42 || buf[offset + 2] !== 0x49 || buf[offset + 3] !== 0x4D) break;
+      offset += 4;
+      const resourceId = buf.readUInt16BE(offset); offset += 2;
+      const nameLen = buf[offset];
+      offset += 1 + nameLen;
+      if ((nameLen + 1) % 2 !== 0) offset++;
+      if (offset + 4 > end) break;
+      const dataSize = buf.readUInt32BE(offset); offset += 4;
+      if ((resourceId === 0x0409 || resourceId === 0x040C) && offset + 24 <= end) {
+        const format = buf.readUInt32BE(offset);
+        if (format === 1) {
+          const w = buf.readUInt32BE(offset + 4), h = buf.readUInt32BE(offset + 8);
+          const wbytes = buf.readUInt32BE(offset + 12), total = buf.readUInt32BE(offset + 16);
+          if (w > 0 && h > 0 && w <= 4096 && h <= 4096 && wbytes >= w * 3 && wbytes * h <= 64 * 1048576) {
+            const pixEnd = Math.min(offset + 24 + Math.min(total || wbytes * h, wbytes * h), buf.length);
+            return { w, h, wbytes, pix: buf.subarray(offset + 24, pixEnd) };
+          }
+        }
+      }
+      offset += dataSize;
+      if (dataSize % 2 !== 0) offset++;
+    }
+  } catch (e) {}
+  return null;
+}
+
+// RGBA（顶行在前）→ 24bpp BMP（底行在前、行 4 字节对齐），给 GDI+ 当中间格式
+function rgbaToBmp(rgba, w, h) {
+  const rowRaw = w * 3;
+  const pad = (4 - rowRaw % 4) % 4;
+  const rowSz = rowRaw + pad;
+  const dataSz = rowSz * h;
+  const bmp = Buffer.alloc(54 + dataSz);
+  bmp.write('BM', 0);
+  bmp.writeUInt32LE(54 + dataSz, 2);
+  bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14);
+  bmp.writeInt32LE(w, 18);
+  bmp.writeInt32LE(h, 22);
+  bmp.writeUInt16LE(1, 26);
+  bmp.writeUInt16LE(24, 28);
+  bmp.writeUInt32LE(dataSz, 34);
+  for (let y = 0; y < h; y++) {
+    const srcY = h - 1 - y;
+    let o = 54 + y * rowSz;
+    for (let x = 0; x < w; x++) {
+      const s = (srcY * w + x) * 4;
+      bmp[o++] = rgba[s + 2]; bmp[o++] = rgba[s + 1]; bmp[o++] = rgba[s];
+    }
+  }
+  return bmp;
+}
+
+// raw RGB 缩略图（BGR 底行在前）→ BMP
+function rawThumbToBmp(raw) {
+  const w = raw.w, h = raw.h, wbytes = raw.wbytes, pix = raw.pix;
+  const rgba = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const src = (h - 1 - y) * wbytes;
+    for (let x = 0; x < w; x++) {
+      const s = src + x * 3, d = (y * w + x) * 4;
+      rgba[d] = pix[s + 2]; rgba[d + 1] = pix[s + 1]; rgba[d + 2] = pix[s]; rgba[d + 3] = 255;
+    }
+  }
+  return rgbaToBmp(rgba, w, h);
+}
+
 // GDI+ 缩放到 64px 长边 JPEG。EncodedCommand 传脚本（路径引号/特殊字符零注入），
 // 异步子进程 + 15s 强杀（Bun.spawn，同 listShares 模式）；成功写 outFile 返回 true
 async function gdiThumb(srcFile, outFile) {
@@ -1767,7 +1863,7 @@ async function gdiThumb(srcFile, outFile) {
     '$max = ' + THUMB_EDGE,
     '$w = $src.Width; $h = $src.Height',
     'if ($w -lt 1 -or $h -lt 1) { exit 1 }',
-    'if ($w -ge $h) { $nw = $max; $nh = [Math]::Max(1, [int]($h * $max / $w)) } else { $nh = $max; $nw = [Math]::Max(1, [int]($w * $max / $h)) }',
+    'if ($w -le $max -and $h -le $max) { $nw = $w; $nh = $h } elseif ($w -ge $h) { $nw = $max; $nh = [Math]::Max(1, [int]($h * $max / $w)) } else { $nh = $max; $nw = [Math]::Max(1, [int]($w * $max / $h)) }',
     '$dst = New-Object System.Drawing.Bitmap($nw, $nh)',
     '$g = [System.Drawing.Graphics]::FromImage($dst)',
     '$g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic',
@@ -1820,23 +1916,49 @@ async function thumbFile(res, q, cfg) {
   const outFile = path.join(tdir, key + '.jpg');
   if (fs.existsSync(outFile)) return sendImageFile(res, outFile, 'image/jpeg');
 
-  const head = readHead(file, ext === '.ai' ? 4 * 1048576 : 32 * 1048576);
+  const head = readHead(file, ext === '.ai' ? 4 * 1048576 : 64 * 1048576);
 
-  // PSD/PSB：内嵌 JPEG 缩略图（1033/1036 资源）
+  // PSD/PSB 三级兜底：内嵌 JPEG（1033/1036 format 0）→ raw RGB 缩略图（format 1）→ 合成图
   if (ext === '.psd' || ext === '.psb') {
     const thumb = extractPsdThumbnail(head);
-    if (!thumb) return sendJson(res, 404, { ok: false, error: 'no embedded thumbnail' });
-    fs.writeFileSync(outFile, thumb);
-    return sendImageFile(res, outFile, 'image/jpeg');
+    if (thumb && thumb.length >= 16 && thumb[0] === 0xFF && thumb[1] === 0xD8) {
+      fs.writeFileSync(outFile, thumb);
+      return sendImageFile(res, outFile, 'image/jpeg');
+    }
+    const raw = extractPsdRawThumb(head);
+    if (raw) {
+      const bmpTmp = path.join(tdir, key + '.bmp');
+      fs.writeFileSync(bmpTmp, rawThumbToBmp(raw));
+      const ok = await gdiThumb(bmpTmp, outFile);
+      try { fs.unlinkSync(bmpTmp); } catch (e) {}
+      if (ok) return sendImageFile(res, outFile, 'image/jpeg');
+    }
+    // 合成图兜底（无缩略图资源的 PSD）：仅小文件、且合成数据是 raw/RLE（zip 压缩解析器不支持，防全黑假图）
+    if (st.size <= 64 * 1048576) {
+      try {
+        let off = 26;
+        const cmL = head.readUInt32BE(off); off += 4 + cmL;
+        const irL = head.readUInt32BE(off); off += 4 + irL;
+        const lmL = head.readUInt32BE(off); off += 4 + lmL;
+        const comp0 = head.readUInt16BE(off);
+        if (comp0 <= 1) {
+          const comp = extractPsdComposite(head);
+          if (comp && comp.width > 0 && comp.height > 0 && comp.width * comp.height <= 20000000) {
+            const bmpTmp = path.join(tdir, key + '.bmp');
+            fs.writeFileSync(bmpTmp, rgbaToBmp(comp.rgba, comp.width, comp.height));
+            const ok = await gdiThumb(bmpTmp, outFile);
+            try { fs.unlinkSync(bmpTmp); } catch (e) {}
+            if (ok) return sendImageFile(res, outFile, 'image/jpeg');
+          }
+        }
+      } catch (e) {}
+    }
+    return sendJson(res, 404, { ok: false, error: 'no embedded thumbnail' });
   }
 
-  // AI：PDF 兼容型扫内嵌 JPEG；DOS EPS 头 TIFF 预览转 JPEG
+  // AI 三级兜底：DOS EPS 头 TIFF 预览 → PDF 兼容段内嵌 JPEG → 全文扫 JPEG
+  // 现代 AI（%!PS 文本头）的 PDF 兼容段贴在文件尾部，所以扫描分头/尾两段
   if (ext === '.ai') {
-    if (head.subarray(0, 5).toString('ascii') === '%PDF-') {
-      const jpg = scanFirstJpeg(head);
-      if (jpg) { fs.writeFileSync(outFile, jpg); return sendImageFile(res, outFile, 'image/jpeg'); }
-      return sendJson(res, 404, { ok: false, error: 'no embedded preview' });
-    }
     const tif = extractEpsTiff(head);
     if (tif && tif.length < 20 * 1048576) {
       const tifTmp = path.join(tdir, key + '.tif');
@@ -1844,6 +1966,13 @@ async function thumbFile(res, q, cfg) {
       const ok = await gdiThumb(tifTmp, outFile);
       try { fs.unlinkSync(tifTmp); } catch (e) {}
       if (ok) return sendImageFile(res, outFile, 'image/jpeg');
+    }
+    let scanBufs;
+    if (st.size <= 16 * 1048576) scanBufs = [readHead(file, st.size)];
+    else scanBufs = [readTail(file, 12 * 1048576, st.size), head];   // 尾部先扫（PDF 段通常贴尾）
+    for (const b of scanBufs) {
+      const jpg = scanFirstJpeg(b);
+      if (jpg) { fs.writeFileSync(outFile, jpg); return sendImageFile(res, outFile, 'image/jpeg'); }
     }
     return sendJson(res, 404, { ok: false, error: 'no embedded preview' });
   }
