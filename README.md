@@ -122,8 +122,9 @@ All API endpoints are protected by a webpage allowlist: the app's own UI origin 
 | GET | `/api/roots` | List configured root directories |
 | GET | `/api/drives` | List available drives (A–Z) |
 | GET | `/api/desktop` | List the user's Desktop folder (path + entries) |
-| GET | `/api/ls?path=<dir>` | List directory contents |
+| GET | `/api/ls?path=<dir>&sort=<key>&asc=<0-1>&fast=<0-1>` | List directory contents; sort=key is name/size/mtime/type, asc=0 or 1 (source-side sort), fast=1 skips per-file stat |
 | GET | `/api/stat?path=<abs>` | Get file/directory metadata |
+| POST | `/api/stat-batch` | Batched stat lookup `{paths: []}` (max 2000 per request, read-only) |
 | GET | `/api/raw?path=<abs>` | Stream file content (supports Range) |
 | GET | `/api/raw?path=<abs>&download=1` | Download file as attachment |
 | GET | `/api/read?path=<abs>` | Read text file content (max 5 MB) |
@@ -293,7 +294,22 @@ html-FileNest/
 
 ## Changelog
 
-**v2.1.0.2 (Latest)**
+**v2.1.0.3 (Latest)**
+
+**New features**
+- **New folder-open flow ("enter first, read once, stream in")**: opening a folder enters it immediately with a "Loading" state, reads the complete listing in one request pre-sorted by the user's chosen sort order (sorted at the source), then streams the files into the page in batches. The UI no longer uses the two-phase `fast=1` + `stat-batch` backfill — one request per folder open instead of one plus a series of backfill calls. (`GET /api/ls?fast=1` and `POST /api/stat-batch` remain available for API consumers.)
+- `GET /api/ls` accepts `sort=<key>` (name / size / mtime / type) and `asc=0/1` to return the listing in the requested order — folders always first, name as tiebreaker, same semantics as the UI sort. `sort=size/mtime` implies a full stat read even with `fast=1`, so the order is always exact.
+
+**Improvements**
+- Dead network shares no longer stall the server: an unreachable UNC host is rejected instantly for 5 minutes after its first slow failure instead of repeatedly blocking the fs thread pool, and network share enumeration now has a 15-second timeout, negative caching and startup warm-up — a dead SMB mapping can no longer drag the drives page.
+
+**Fixes**
+- Background right-click now always shows the app's New / Upload / Refresh menu. Previously it fell back to the browser's context menu when the click landed on virtual-scroll spacers, group headers, empty states or grid gaps (i.e. in most large folders).
+- The preview pane now closes automatically and releases its Blob memory when you navigate to a different folder; refreshing the same folder keeps it open.
+- `POST /api/stat-batch` is usable again: a parameter-count defect made every call fail, and an abort-detection defect silently returned empty results on live requests.
+- The desktop entry no longer disappears from the first screen after background loading (stale view cache).
+
+**v2.1.0.2**
 
 **New features**
 - **Two-phase directory loading ("open first, stream details")**: `GET /api/ls?fast=1` returns the listing immediately with names/types only (zero per-file `stat` calls — types come from the directory read itself), and the new `POST /api/stat-batch` endpoint fills in size/modified time in batches of 1000 while the folder is already open and usable. Large folders that used to block for seconds now open in a fraction of a second; size/modified columns show "…" until backfilled, and the list re-sorts once when backfill completes. Plain `/api/ls` (no `fast`) behaves exactly as before, including the response fields.
