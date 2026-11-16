@@ -401,6 +401,8 @@ function requestOriginAllowed(req) {
 // ============ 服务 ============
 function runServer() {
   const cfg = loadConfig();
+  // 启动即后台预热共享枚举（等 PowerShell 冷启动），用户点盘符页时已缓存命中（2026-11-16）
+  setTimeout(() => { listNetShares().catch(() => {}); }, 500);
   // ★ HTTP 监听失败必须退出：进程活着但端口不通的"半活"状态比死进程更糟——
   //   死进程能被计划任务/重启脚本拉起，半活僵尸会让服务永远隐身（重启后"再也进不去"）
   http.createServer(handleRequest)
@@ -753,6 +755,29 @@ function isRecycleChild(absNorm) {
   } catch (_) { return false; }
 }
 
+// —— 坏网络路径快速失败缓存：不可达 UNC 主机首次慢失败（SMB 超时 20s+）后，
+//    5 分钟内对该主机的新请求直接快速拒绝，不反复踩网络超时把 fs 线程池堵死
+//    （2026-11-16 服务端"塞车"修复，源自 2026-11-15 卡顿三刀验证版） ——
+const _badHost = new Map();
+function checkBadHost(norm) {
+  if (!String(norm).startsWith('\\\\')) return;
+  const host = String(norm).slice(2).split('\\')[0].toLowerCase();
+  const until = _badHost.get(host);
+  if (until) {
+    if (Date.now() < until) {
+      const e = new Error('network path temporarily unreachable');
+      e.status = 400;
+      throw e;
+    }
+    _badHost.delete(host);
+  }
+}
+function markBadHost(absNorm) {
+  if (!String(absNorm).startsWith('\\\\')) return;
+  const host = String(absNorm).slice(2).split('\\')[0].toLowerCase();
+  _badHost.set(host, Date.now() + 300000);
+}
+
 function resolveAllowedPath(pathStr, cfg, opts) {
   const s = String(pathStr || '');
   if (!s) throw new Error('path required');
@@ -763,6 +788,7 @@ function resolveAllowedPath(pathStr, cfg, opts) {
   if (!norm.startsWith('\\\\') && !/^[A-Za-z]:\\/.test(norm)) {
     throw new Error('must be absolute path');
   }
+  checkBadHost(norm);   // 坏 UNC 主机 5 分钟内快速拒绝（2026-11-16）
   if (isDenied(norm, cfg) && !(opts && opts.trashRead && isRecycleChild(norm))) {
     const e = new Error('path is denied by blacklist');
     e.status = 403;
@@ -822,7 +848,7 @@ function listDrives(res) {
 let netCache = null, netCacheAt = 0;
 async function listNetShares() {
   const now = Date.now();
-  if (netCache && now - netCacheAt < 60000) return netCache;   // 60s 缓存
+  if (netCache && now - netCacheAt < 600000) return netCache;   // 10 分钟缓存
   const ps = '$out=@(); ' +
     'foreach ($m in @(Get-SmbGlobalMapping -ErrorAction SilentlyContinue; Get-SmbMapping -ErrorAction SilentlyContinue)) { ' +
     'if ($m.RemotePath) { $out += [PSCustomObject]@{ path=$m.RemotePath; letter=$m.LocalPath } } }; ' +
@@ -836,12 +862,17 @@ async function listNetShares() {
     'if ($mp) { foreach ($n in $mp.GetSubKeyNames()) { if ($n.StartsWith(\"##\") -and -not $n.StartsWith(\"###\")) { ' +
     '$out += [PSCustomObject]@{ path=(\"\\\\\" + $n.Substring(2).Replace(\"#\",\"\\\")); letter=$null } } }; $mp.Close() } }; ' +
     '($out | Sort-Object path -Unique) | ConvertTo-Json -Compress';
-  const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
-    { stdout: 'pipe', stderr: 'ignore' });
-  const out = await new Response(proc.stdout).text();
-  await proc.exited;
-  let arr = [];
-  try { const j = JSON.parse(out.trim() || '[]'); arr = Array.isArray(j) ? j : [j]; } catch { }
+  try {
+    const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+      { stdout: 'pipe', stderr: 'ignore' });
+    // 15s 强杀兜底：断开的 SMB 映射/慢 NAS 会让 Get-SmbConnection 阻塞等网络超时，
+    // 无超时的 PowerShell 枚举能把 /api/drives 拖到分钟级
+    const killTimer = setTimeout(() => { try { proc.kill(); } catch (e) {} }, 15000);
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    clearTimeout(killTimer);
+    let arr = [];
+    try { const j = JSON.parse(out.trim() || '[]'); arr = Array.isArray(j) ? j : [j]; } catch { }
     // —— 通用归一规则（产品级，不针对任何具体主机/机器） ——
     // 所有网络共享条目一律收敛到主机根：任何 \\host\share\... 深度的路径
     // （映射盘符 / UNC 记录 / 活跃 SMB 连接，任何主机、任何深度）统一归一为 \\host，
@@ -857,6 +888,9 @@ async function listNetShares() {
   netCache = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
     .map(x => ({ path: toHostRoot(x.path), letter: x.letter || null }))
     .filter((x, i, a) => a.findIndex(y => (y.letter || '') === (x.letter || '') && y.path.toLowerCase() === x.path.toLowerCase()) === i);
+  } catch (e) {
+    netCache = netCache || [];   // 失败/超时也缓存（10 分钟内不重试），防反复卡（2026-11-16）
+  }
   netCacheAt = now;
   return netCache;
 }
@@ -912,9 +946,13 @@ async function listDir(req, res, q, cfg) {
   // 客户端已断开（AbortController）则放弃剩余处理：否则旧请求跑完才放行新
   // 请求，快速进/返回时服务端排队塞车（2026-11-15）
   const dead = () => !!(req && req.signal && req.signal.aborted);
-  // fast=1 两阶段快路径：只用 readdir 自带类型零 stat 秒回，size/mtime 由前端
-  // 经 /api/stat-batch 分批补齐（2026-11-15 大目录"先进再流式"优化）
-  const fast = q.fast === '1' || q.fast === 'true';
+  // 一次性读取 + 源头定序（2026-11-16）：按用户设定的排序方式一次读全量（readdir+stat）
+  // 并在服务端排好序再返回，页面拿到后按序流式加载；不再两阶段补齐（stat-batch）
+  const sortKey = (q.sort || '').toLowerCase();      // name|size|mtime|type
+  const sortAsc = q.asc !== '0';
+  const needStat = sortKey === 'size' || sortKey === 'mtime';   // 这两类排序依赖 stat 字段
+  // sort=size/mtime 时忽略 fast：源头有序优先，宁可全量 stat 也要顺序绝对正确
+  const fast = (q.fast === '1' || q.fast === 'true') && !needStat;
   // UNC 主机根（\\host）不能用 readdir 列目录——Windows 共享枚举是另一套 API，
   // 用 net view 列出主机上的可见共享，以目录形式呈现（2026-11-13）
   if (isBareHost(dir)) {
@@ -922,6 +960,9 @@ async function listDir(req, res, q, cfg) {
     const items = names.map((n) => ({
       name: n, path: dir + '\\' + n, type: 'dir', size: 0, mtime: 0, ext: ''
     }));
+    items.sort((a, b) => sortAsc
+      ? a.name.localeCompare(b.name, 'zh', { numeric: true })
+      : b.name.localeCompare(a.name, 'zh', { numeric: true }));
     sendJson(res, 200, { ok: true, path: dir, fast, items });
     return;
   }
@@ -949,7 +990,7 @@ async function listDir(req, res, q, cfg) {
         try {
           const s = await fs.promises.stat(full);
           type = s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other';
-        } catch (e) {}
+        } catch (e) { markBadHost(full); }
       } else {
         type = ent.isDirectory() ? 'dir' : ent.isFile() ? 'file' : 'other';
       }
@@ -978,16 +1019,22 @@ async function listDir(req, res, q, cfg) {
             it.type = s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other';
             it.size = s.size;
             it.mtime = s.mtimeMs;
-          } catch (e) {}
+          } catch (e) { markBadHost(it.path); }
         }
       })());
     }
     await Promise.all(workers);
   }
+  // 源头定序（2026-11-16）：目录优先固定（不随方向翻转），语义与前端 sortItems 一致
   items.sort((a, b) => {
     if (a.type === 'dir' && b.type !== 'dir') return -1;
     if (b.type === 'dir' && a.type !== 'dir') return 1;
-    return a.name.localeCompare(b.name, 'zh', { numeric: true });
+    let r = 0;
+    if (sortKey === 'size') r = (a.size || 0) - (b.size || 0);
+    else if (sortKey === 'mtime') r = (a.mtime || 0) - (b.mtime || 0);
+    else if (sortKey === 'type') r = (a.ext || '').localeCompare(b.ext || '');
+    if (r === 0) r = a.name.localeCompare(b.name, 'zh', { numeric: true });
+    return sortAsc ? r : -r;
   });
 
   sendJson(res, 200, { ok: true, path: dir, fast, items });
@@ -1034,7 +1081,7 @@ async function statBatchOp(req, res, data, cfg) {
         const lst = await fs.promises.lstat(full);
         if (lst.isSymbolicLink()) {
           let rl;
-          try { rl = nkey(fs.realpathSync(full)); } catch (e) { return null; }
+          try { rl = nkey(fs.realpathSync(full)); } catch (e) { markBadHost(full); return null; }
           if (hit(rl)) return null;
           s = await fs.promises.stat(full);        // 链接条目跟随取目标真值
         } else {
@@ -1050,7 +1097,7 @@ async function statBatchOp(req, res, data, cfg) {
         size: s.size,
         mtime: s.mtimeMs
       };
-    } catch (e) { return null; }
+    } catch (e) { markBadHost(p); return null; }
   }));
   sendJson(res, 200, { ok: true, items: out.filter(Boolean) });
 }
@@ -2452,7 +2499,7 @@ async function searchOp(req, res, q, cfg) {
       } else if (ent.isFile()) {
         if (ent.name.toLowerCase().includes(kw)) {
           let size = 0, mtime = 0;
-          try { const st = await fs.promises.stat(full); size = st.size; mtime = Math.floor(st.mtimeMs); } catch (e) {}
+          try { const st = await fs.promises.stat(full); size = st.size; mtime = Math.floor(st.mtimeMs); } catch (e) { markBadHost(full); }
           results.push({ name: path.win32.relative(root, full), path: full, type: 'file', size, mtime, ext: path.win32.extname(ent.name).toLowerCase() });
         }
       }
