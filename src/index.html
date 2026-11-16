@@ -699,22 +699,49 @@ body {
     return m[e] || '📄';
   }
   // —— 文件缩略图（2026-11-16）：图标位流式换低清小图，列表加载完全不受影响 ——
-  // 行建好（=进入可视区）才排队；每张就绪立刻只换这一行的图标（逐张流式，不做批量刷新）；
-  // 并发 3，提不出缩略图保留原图标不重试；导航时清残留队列+取消在途下载（防旧队列塞新车道），
-  // 导航代际变了在途结果全部丢弃
+  // —— 缩略图视线调度（2026-11-16）——
+  // 只加载"视线所在范围"（与列表视口相交的行）的缩略图；视线一动（滚动/resize/导航）
+  // 立即终止在途+清队列，停住 200ms 后只加载新视口内的。每张就绪立刻只换这一行的图标。
+  // 并发 3，提不出缩略图保留原图标不重试；导航代际变了在途结果全部丢弃。
   var THUMB_EXTS = ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'ico', 'webp', 'avif', 'apng', 'heic', 'heif', 'psd', 'psb', 'ai'];
   var thumbQ = [], thumbActive = 0;
-  var THUMB_INFLIGHT = [];   // 在途 Image 引用：导航时主动取消下载
+  var THUMB_INFLIGHT = [];   // 在途 Image 引用：视线移动/导航时主动取消下载
   var THUMB_CONC = 3;
-  function queueThumb(item) {
-    if (item._thumb || item._thumbTried) return;
-    if (item.type !== 'file' || item._zip || item._recycle) return;
-    if (THUMB_EXTS.indexOf(normExt(item.ext)) < 0) return;
-    if (thumbQ.indexOf(item) >= 0) return;
-    thumbQ.push(item);
-    while (thumbQ.length > 300) thumbQ.shift();   // 溢出丢弃，滚到时再补
+  var thumbScanTimer = 0;
+  function thumbable(item) {
+    if (!item || item._thumb || item._thumbTried) return false;
+    if (item.type !== 'file' || item._zip || item._recycle) return false;
+    return THUMB_EXTS.indexOf(normExt(item.ext)) >= 0;
+  }
+  function resetThumbLoads() {   // 清队列 + 取消在途（导航/视线移动共用）
+    thumbQ = [];
+    while (THUMB_INFLIGHT.length) {
+      var im = THUMB_INFLIGHT.shift();
+      if (im._item) im._item._thumbTried = false;   // 被取消的允许重新排队
+      try { im.onload = im.onerror = null; im.src = ''; } catch (e) {}
+    }
+    thumbActive = 0;
+  }
+  function scanVisibleThumbs() {
+    var vr = listEl.getBoundingClientRect();
+    if (!vr.height) return;   // 列表不可见不扫（防隐藏时全量入队）
+    var q = [];
+    var rows = listEl.querySelectorAll('.file-item');
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i].getBoundingClientRect();
+      if (r.bottom <= vr.top || r.top >= vr.bottom) continue;   // 不在视线内
+      if (thumbable(rows[i]._item)) q.push(rows[i]._item);
+    }
+    thumbQ = q;
     kickThumb();
   }
+  function thumbScrollTick() {   // 视线一动：终止加载；停住后只载新视口
+    resetThumbLoads();
+    clearTimeout(thumbScanTimer);
+    thumbScanTimer = setTimeout(scanVisibleThumbs, 200);
+  }
+  listEl.addEventListener('scroll', thumbScrollTick, { passive: true });
+  window.addEventListener('resize', thumbScrollTick);
   function kickThumb() {
     while (thumbActive < THUMB_CONC && thumbQ.length) loadThumb(thumbQ.shift());
   }
@@ -1188,13 +1215,14 @@ body {
       } });
     }
     // —— 渲染：>400 行走虚拟窗口（滚动只建可见行，万条目录 DOM 恒定 ~60） ——
-    if (rows.length > 400) { renderVirtual(rows); listEl.scrollTop = keepTop; if (listEl.onscroll) listEl.onscroll(); return; }
+    if (rows.length > 400) { renderVirtual(rows); listEl.scrollTop = keepTop; if (listEl.onscroll) listEl.onscroll(); scanVisibleThumbs(); return; }
     rows.forEach(function (r) {
       if (r.kind === 'file') listEl.appendChild(makeItemEl(r.item));
       else if (r.kind === 'raw') listEl.appendChild(r.build());
       else listEl.appendChild(buildGroupHead(r));
     });
     listEl.scrollTop = keepTop;
+    scanVisibleThumbs();
   }
 
   // —— 分组头构建（虚拟/全量两路共用） ——
@@ -1597,7 +1625,7 @@ body {
       item._timeEl = div.querySelector('.time');
     }
     item._iconEl = div.querySelector('.icon');   // 缩略图就地更新锚点（2026-11-16）
-    queueThumb(item);   // 行建好（=可见）才排队，列表加载完全不等缩略图
+    div._item = item;   // 视线调度反查锚点（2026-11-16）
     div.onclick = function (e) {
       if (item._recycle) { selectItem(item); if (item.type !== 'dir') previewFile(item); return; }
       // Ctrl/Shift 多选；普通点选 = 单选
@@ -1778,14 +1806,7 @@ body {
   var navAbort = null;
   function beginNav() {
     var gen = ++navGen;
-    // —— 缩略图塞车修复（2026-11-16）：清残留队列 + 取消在途下载 ——
-    thumbQ = [];
-    while (THUMB_INFLIGHT.length) {
-      var im = THUMB_INFLIGHT.shift();
-      if (im._item) im._item._thumbTried = false;   // 被取消的允许下次重新排队
-      try { im.onload = im.onerror = null; im.src = ''; } catch (e) {}
-    }
-    thumbActive = 0;
+    resetThumbLoads();   // 清残留队列 + 取消在途下载（2026-11-16）
     if (navAbort) { try { navAbort.abort(); } catch (e) {} }
     navAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     return gen;
