@@ -2720,12 +2720,14 @@ body {
     fileInput.value = '';
   };
   listEl.oncontextmenu = function (e) {
-    if (e.target === listEl) {
-      e.preventDefault();
-      state.selected = null; state.multi = []; state.anchor = null;
-      renderList(); renderStatus();
-      showContextMenu(e.clientX, e.clientY, null);
-    }
+    // 背景右键统一拦到页面专属菜单（新建/上传/刷新）：行菜单由行自身处理，
+    // 其余命中区域（分组头/空态/加载中/虚拟滚动垫层 #vsizer #vwin .vrow/网格间隙）
+    // 不再因命中子元素漏成浏览器默认菜单（2026-11-16）
+    if (e.target.closest && e.target.closest('.file-item')) return;
+    e.preventDefault();
+    state.selected = null; state.multi = []; state.anchor = null;
+    renderList(); renderStatus();
+    showContextMenu(e.clientX, e.clientY, null);
   };
   document.addEventListener('dragover', function (e) {
     if (e.dataTransfer && e.dataTransfer.types.indexOf('Files') >= 0) {
