@@ -594,6 +594,7 @@ body {
     historyIdx: -1,
     viewMode: 'grid',
     filter: '',
+    loading: false,    // 目录读取中：先进目录显示"加载中"（2026-11-16 流程改造）
     sortKey: 'mtime',  // 排序字段：name / size / mtime / type（默认按修改时间）
     sortAsc: false,    // 升序 / 降序（默认降序）
     group: false,      // 按类型分组显示
@@ -1090,7 +1091,7 @@ body {
       var empty = document.createElement('div');
       empty.className = 'empty';
       empty.innerHTML = '<span class="emoji">📂</span>' +
-        (state.filter ? tr('没有匹配的文件') : tr('此文件夹为空'));
+        (state.loading ? tr('加载中…') : state.filter ? tr('没有匹配的文件') : tr('此文件夹为空'));
       listEl.appendChild(empty);
       return;
     }
@@ -1642,12 +1643,14 @@ body {
         showToast(tr('打开失败: ') + e.message, 'error');
       });
     }
-    // —— 普通目录（两阶段：fast 首包秒进，size/时间后台分批补齐；已看过的目录走
-    //    缓存秒开——后退/前进不重发请求不重补齐，2026-11-15）——
+    // —— 文件夹打开流程（2026-11-16 流程改造）：先进目录（页面立即显示"加载中"），
+    //    按用户设定的排序方式一次性读取全量数据（服务端源头定序），然后页面
+    //    流式加载文件（分批渲染，界面不卡）；已看过的目录走缓存秒开 ——
     var cached = lsCache[target.path];
     if (cached && Date.now() - cached.ts < 90000) {
       state.current = { path: target.path, source: target.source };
       state.items = cached.items;
+      state.loading = false;
       state.selected = null; state.multi = []; state.anchor = null;
       state.filter = '';
       $('search').value = '';
@@ -1659,28 +1662,44 @@ body {
       render();
       return Promise.resolve();
     }
-    return apiGet('/api/ls?path=' + enc(target.path) + '&fast=1', navAbort ? navAbort.signal : undefined).then(function (r) {
+    // ① 先进目录，页面显示加载中
+    state.current = { path: target.path, source: target.source };
+    state.items = [];
+    state.loading = true;
+    state.selected = null; state.multi = []; state.anchor = null;
+    state.filter = '';
+    $('search').value = '';
+    if (pushHistory) {
+      state.history = state.history.slice(0, state.historyIdx + 1);
+      state.history.push({ path: target.path, source: target.source });
+      state.historyIdx = state.history.length - 1;
+    }
+    render();
+    // ② 一次性读取（按用户排序方式，服务端源头定序）
+    return apiGet('/api/ls?path=' + enc(target.path) + '&sort=' + enc(state.sortKey) + '&asc=' + (state.sortAsc ? 1 : 0), navAbort ? navAbort.signal : undefined).then(function (r) {
       if (gen !== navGen) return;   // 迟到响应丢弃（已导航到别处）
       state.current = { path: r.path, source: target.source };
-      state.items = r.items || [];
-      if (r.fast) state.items.forEach(function (it) { it._pending = true; });
-      state.selected = null; state.multi = []; state.anchor = null;
-      state.filter = '';
-      $('search').value = '';
-      if (pushHistory) {
-        state.history = state.history.slice(0, state.historyIdx + 1);
-        state.history.push({ path: r.path, source: target.source });
-        state.historyIdx = state.history.length - 1;
-      }
-      render();
-      if (r.fast) fillStats(state.items, r.path);
-      else cachePut(r.path, state.items);
+      state.loading = false;
+      // ③ 页面流式加载文件：分批进列表逐批渲染，界面全程可操作
+      var all = r.items || [];
+      var BATCH = 1000;
+      var i = 0;
+      (function step() {
+        if (gen !== navGen) return;   // 已导航到别处，中止流式加载
+        var end = Math.min(all.length, i + BATCH);
+        while (i < end) state.items.push(all[i++]);
+        state._viewCache = null;   // items 原地追加、引用未换，不失效会命中旧视图
+        render();
+        if (i < all.length) { setTimeout(step, 0); return; }
+        cachePut(r.path, state.items);   // 全量到齐写缓存，后退/前进秒开
+      })();
     }).catch(function (e) {
       if (gen !== navGen) return;   // 中止/过期的错误不打扰
+      state.loading = false;
+      render();
       showToast(tr('打开失败: ') + e.message, 'error');
     });
   }
-  // —— 流式补齐：分批 POST /api/stat-batch 回填 fast 列表的 size/mtime（2026-11-15）——
   // —— 目录缓存：已看过的目录秒开（后退/前进不重发请求），写操作后整体失效 ——
   var lsCache = {};
   function cachePut(path, items) {
@@ -1691,54 +1710,15 @@ body {
     while (keys.length >= 20) { delete lsCache[keys.shift()]; }
     lsCache[path] = { items: items, ts: now };
   }
-  // —— 导航代际：新操作强制终止旧操作——作废在途补齐批次、中止在途请求、丢弃
-  //    迟到响应。快速进入/返回时旧操作不再叠加塞车（2026-11-15）——
+  // —— 导航代际：新操作强制终止旧操作——中止在途请求、丢弃迟到响应。
+  //    快速进入/返回时旧操作不再叠加塞车（2026-11-15）——
   var navGen = 0;
   var navAbort = null;
   function beginNav() {
     var gen = ++navGen;
-    fillSeq++;   // 作废一切在途 fillStats 批次
     if (navAbort) { try { navAbort.abort(); } catch (e) {} }
     navAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     return gen;
-  }
-  var fillSeq = 0;
-  function fillStats(items, dirPath) {
-    var seq = ++fillSeq;
-    var byPath = {}, pend = [];
-    items.forEach(function (it) {
-      byPath[it.path] = it;
-      if (it._pending) pend.push(it.path);
-    });
-    if (!pend.length) return;
-    var BATCH = 1000;
-    function step(i) {
-      if (seq !== fillSeq) return;   // 已导航到别处，中止补齐
-      if (i >= pend.length) {
-        // 全部到齐重排一次（默认按修改时间排序依赖补齐数据），保留滚动位置；
-        // 并写入目录缓存（同对象引用，后退/前进秒开）
-        renderList();   // renderList 自带滚动位置保持
-        cachePut(dirPath, items);
-        state._viewCache = null;   // size/mtime 已变，排序视图失效
-        return;
-      }
-      apiPost('/api/stat-batch', { paths: pend.slice(i, i + BATCH) }, navAbort ? navAbort.signal : undefined).then(function (r) {
-        if (seq !== fillSeq) return;
-        (r.items || []).forEach(function (s) {
-          var it = byPath[s.path];
-          if (!it) return;
-          it.size = s.size; it.mtime = s.mtime; it._pending = false;
-          if (it._sizeEl && it._sizeEl.isConnected) {
-            it._sizeEl.textContent = (it.type === 'dir' ? '—' : formatSize(it.size));
-          }
-          if (it._timeEl && it._timeEl.isConnected) {
-            it._timeEl.textContent = it.mtime ? formatTime(it.mtime) : '';
-          }
-        });
-        step(i + BATCH);
-      }).catch(function () {});   // 补齐失败/中止不打扰，列表已可用
-    }
-    step(0);
   }
   function navBack() {
     if (state.historyIdx <= 0) return;
