@@ -1605,6 +1605,13 @@ body {
   function navTo(target, pushHistory) {
     if (pushHistory === undefined) pushHistory = true;
     var gen = beginNav();
+    // 目录切换：原预览文件已失效，预览窗格自动回收（关闭 + 释放 Blob URL），
+    // 与关闭按钮同语义（2026-11-16 用户指示；reload 同目录不关，预览仍有效）
+    if (!state.current || state.current.path !== target.path) {
+      state.previewItem = null;
+      previewEl.classList.remove('open');
+      revokeObjectUrls();
+    }
     if (target.path === '*') return showDrives(gen);
     if (target.path === '*fav*') return showFavorites(gen);
     if (target.path === '*recycle*') return showRecycle(gen);
