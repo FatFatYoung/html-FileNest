@@ -1236,14 +1236,11 @@ function extractPsdThumbnail(buf) {
     if (resourceId === 0x0409 || resourceId === 0x040C) {
       if (offset + 24 > buf.length) break;
       const format = buf.readUInt32BE(offset); // 0=JPEG, 1=raw RGB
-      const payloadEnd = Math.min(offset + dataSize, buf.length);
       if (format === 0) {
         // 跳过 format(4)+width(4)+height(4)+widthBytes(4)+totalSize(4)+compressedSize(4)=24
-        return buf.slice(offset + 24, payloadEnd);
+        const jpegEnd = Math.min(offset + dataSize, buf.length);
+        return buf.slice(offset + 24, jpegEnd);
       }
-      // 真实文件变体实证：fmt=1 但载荷实为 JPEG（4 字节前缀 + FFD8..FFD9），魔数扫描兜底
-      const found = scanFirstJpeg(buf.subarray(offset, payloadEnd));
-      if (found) return found;
     }
     offset += dataSize;
     if (dataSize % 2 !== 0) offset++;
@@ -1802,7 +1799,9 @@ function extractPsdRawThumb(buf) {
           const w = buf.readUInt32BE(offset + 4), h = buf.readUInt32BE(offset + 8);
           const wbytes = buf.readUInt32BE(offset + 12), total = buf.readUInt32BE(offset + 16);
           if (w > 0 && h > 0 && w <= 4096 && h <= 4096 && wbytes >= w * 3 && wbytes * h <= 64 * 1048576) {
-            const pixEnd = Math.min(offset + 24 + Math.min(total || wbytes * h, wbytes * h), buf.length);
+            // 像素区必须裁在资源载荷边界内：total 字段可能虚大，越界续读=跨资源垃圾噪点
+            const payloadEnd = Math.min(offset + dataSize, end);
+            const pixEnd = Math.min(offset + 24 + Math.min(total || wbytes * h, wbytes * h), payloadEnd);
             const pix = buf.subarray(offset + 24, pixEnd);
             // 载荷不足整幅 = 不是真 raw（可能是带前缀的 JPEG 变体），弃用防噪点
             if (pix.length >= wbytes * h) return { w, h, wbytes, pix };
@@ -1813,6 +1812,42 @@ function extractPsdRawThumb(buf) {
       if (dataSize % 2 !== 0) offset++;
     }
   } catch (e) {}
+  return null;
+}
+
+// PSD 1033/1036 资源载荷内 JPEG 扫描（缩略图专用变体兜底）：
+// 真实文件变体实证：fmt=1 但载荷实为 JPEG（4 字节前缀 + FFD8..FFD9）。
+// 只给 /api/thumb 管线用；预览窗格（officePreview）走 extractPsdThumbnail 原逻辑，严禁混用。
+function extractPsdThumbVariant(buf) {
+  if (buf.length < 26) return null;
+  if (buf[0] !== 0x38 || buf[1] !== 0x42 || buf[2] !== 0x50 || buf[3] !== 0x53) return null;
+  let offset = 26;
+  if (offset + 4 > buf.length) return null;
+  const colorModeLen = buf.readUInt32BE(offset);
+  offset += 4 + colorModeLen;
+  if (offset + 4 > buf.length) return null;
+  const resourcesLen = buf.readUInt32BE(offset);
+  offset += 4;
+  const resourcesEnd = Math.min(offset + resourcesLen, buf.length);
+  while (offset + 12 < resourcesEnd) {
+    if (buf[offset] !== 0x38 || buf[offset + 1] !== 0x42 || buf[offset + 2] !== 0x49 || buf[offset + 3] !== 0x4D) break;
+    offset += 4;
+    const resourceId = buf.readUInt16BE(offset);
+    offset += 2;
+    const nameLen = buf[offset];
+    offset += 1 + nameLen;
+    if ((nameLen + 1) % 2 !== 0) offset++;
+    if (offset + 4 > buf.length) break;
+    const dataSize = buf.readUInt32BE(offset);
+    offset += 4;
+    if (resourceId === 0x0409 || resourceId === 0x040C) {
+      const payloadEnd = Math.min(offset + dataSize, buf.length);
+      const found = scanFirstJpeg(buf.subarray(offset, payloadEnd));
+      if (found) return found;
+    }
+    offset += dataSize;
+    if (dataSize % 2 !== 0) offset++;
+  }
   return null;
 }
 
@@ -1937,6 +1972,12 @@ async function thumbFile(res, q, cfg) {
       const ok = await gdiThumb(bmpTmp, outFile);
       try { fs.unlinkSync(bmpTmp); } catch (e) {}
       if (ok) return sendImageFile(res, outFile, 'image/jpeg');
+    }
+    // 变体兜底（缩略图专用）：fmt=1 但载荷实为 JPEG（4 字节前缀 + FFD8..FFD9），魔数扫描
+    const vjpg = extractPsdThumbVariant(head);
+    if (vjpg) {
+      fs.writeFileSync(outFile, vjpg);
+      return sendImageFile(res, outFile, 'image/jpeg');
     }
     // 合成图兜底（无缩略图资源的 PSD）：仅小文件、且合成数据是 raw/RLE（zip 压缩解析器不支持，防全黑假图）
     if (st.size <= 64 * 1048576) {
