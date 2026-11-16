@@ -129,6 +129,7 @@ All API endpoints are protected by a webpage allowlist: the app's own UI origin 
 | GET | `/api/raw?path=<abs>&download=1` | Download file as attachment |
 | GET | `/api/read?path=<abs>` | Read text file content (max 5 MB) |
 | GET | `/api/office-preview?path=<abs>` | Office/Design preview (doc/docx/xls/xlsx/ppt/pptx/psd/psb/ai) |
+| GET | `/api/thumb?path=<abs>` | Low-res thumbnail (64px-edge JPEG) for images/PSD/PSB/AI; SVG passthrough; 404 when none |
 | GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List archive contents (ZIP/JAR/TAR/GZ/TGZ/RAR/7Z, virtual directory) |
 | GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from archive (multi-format) |
 | POST | `/api/mkdir` | Create folder `{path, name}` |
@@ -294,7 +295,12 @@ html-FileNest/
 
 ## Changelog
 
-**v2.1.0.3 (Latest)**
+**v2.1.0.4 (Latest)**
+
+  **New features**
+  - **File thumbnails in list icons (images / PSD / AI)**: new `GET /api/thumb` returns a low-resolution (64px-edge JPEG) thumbnail for image files, PSD/PSB (embedded JPEG preview) and AI files (best-effort embedded preview), with SVG passthrough; files without an extractable thumbnail keep their type icon. Icons swap progressively as each thumbnail arrives (visible rows first, 3 concurrent requests) and never block directory loading. Generated thumbnails are cached under `cacheDir/thumbs`, keyed by mtime+size.
+
+  **v2.1.0.3**
 
 **New features**
 - **New folder-open flow ("enter first, read once, stream in")**: opening a folder enters it immediately with a "Loading" state, reads the complete listing in one request pre-sorted by the user's chosen sort order (sorted at the source), then streams the files into the page in batches. The UI no longer uses the two-phase `fast=1` + `stat-batch` backfill — one request per folder open instead of one plus a series of backfill calls. (`GET /api/ls?fast=1` and `POST /api/stat-batch` remain available for API consumers.)
