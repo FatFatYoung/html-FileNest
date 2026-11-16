@@ -1236,11 +1236,14 @@ function extractPsdThumbnail(buf) {
     if (resourceId === 0x0409 || resourceId === 0x040C) {
       if (offset + 24 > buf.length) break;
       const format = buf.readUInt32BE(offset); // 0=JPEG, 1=raw RGB
+      const payloadEnd = Math.min(offset + dataSize, buf.length);
       if (format === 0) {
         // 跳过 format(4)+width(4)+height(4)+widthBytes(4)+totalSize(4)+compressedSize(4)=24
-        const jpegEnd = Math.min(offset + dataSize, buf.length);
-        return buf.slice(offset + 24, jpegEnd);
+        return buf.slice(offset + 24, payloadEnd);
       }
+      // 真实文件变体实证：fmt=1 但载荷实为 JPEG（4 字节前缀 + FFD8..FFD9），魔数扫描兜底
+      const found = scanFirstJpeg(buf.subarray(offset, payloadEnd));
+      if (found) return found;
     }
     offset += dataSize;
     if (dataSize % 2 !== 0) offset++;
@@ -1800,7 +1803,9 @@ function extractPsdRawThumb(buf) {
           const wbytes = buf.readUInt32BE(offset + 12), total = buf.readUInt32BE(offset + 16);
           if (w > 0 && h > 0 && w <= 4096 && h <= 4096 && wbytes >= w * 3 && wbytes * h <= 64 * 1048576) {
             const pixEnd = Math.min(offset + 24 + Math.min(total || wbytes * h, wbytes * h), buf.length);
-            return { w, h, wbytes, pix: buf.subarray(offset + 24, pixEnd) };
+            const pix = buf.subarray(offset + 24, pixEnd);
+            // 载荷不足整幅 = 不是真 raw（可能是带前缀的 JPEG 变体），弃用防噪点
+            if (pix.length >= wbytes * h) return { w, h, wbytes, pix };
           }
         }
       }
