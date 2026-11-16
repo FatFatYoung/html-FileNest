@@ -403,7 +403,7 @@ Security fixes contributed by [@sucloudflare](https://github.com/sucloudflare) v
 
 **v1.4.2.2**
 - Security: fixed HTML injection in Office document preview (P1 #3). Preview HTML (mammoth output for DOCX) was assigned to `innerHTML` unsanitized — a crafted document could execute script in the app origin. All preview HTML now passes DOMPurify 3.4.17 (vendored pinned copy); the file-tree error message (which can embed hostile filenames) is sanitized as well.
-- License compliance: full third-party license texts (Bun, JSZip, mammoth, word-extractor, SheetJS, DOMPurify, 7-Zip notice) are now embedded inside the executable. Run `html-FileNest.exe --licenses` to display them at any time.
+- License compliance: full third-party license texts (Bun, JSZip, mammoth, word-extractor, SheetJS, DOMPurify, jimp, 7-Zip notice) are now embedded inside the executable. Run `html-FileNest.exe --licenses` to display them at any time.
 - Docs: corrected the SheetJS license note — v0.20.3 (SheetJS CDN) is Apache-2.0, same license as before; the previous "newer versions use a different license" statement was outdated.
 
 **v1.4.2.1**
@@ -464,6 +464,7 @@ Security fixes contributed by [@sucloudflare](https://github.com/sucloudflare) v
 | [SheetJS (xlsx)](https://sheetjs.com) | XLSX/XLS spreadsheet parsing for table preview | Apache-2.0 |
 | [DOMPurify](https://github.com/cure53/DOMPurify) | HTML sanitization for document preview (XSS/HTML injection defense) | Apache-2.0 (elected from MPL-2.0 OR Apache-2.0) |
 | [JSZip](https://stuk.github.io/jszip/) | ZIP/JAR archive browsing/extract + PPTX slide text parsing | MIT/GPL-3.0 |
+| [jimp](https://github.com/jimp-dev/jimp) | Image decode/scale for file list thumbnails (bundles jpeg-js, pngjs, tinycolor2) | MIT (jpeg-js BSD-3-Clause) |
 | [7-Zip](https://www.7-zip.org) | RAR/7Z/BZ2/XZ archive listing & extraction (CLI, runtime dependency) | LGPL-2.1+ |
 
 > **Note**: Office document "open with system handler" uses the OS file association (`explorer.exe`/`cmd /c start`) — no third-party Office software is bundled or required. SheetJS is pinned to v0.20.3 from the official SheetJS CDN (Apache-2.0). Full third-party license texts are embedded in the executable and can be displayed with `html-FileNest.exe --licenses`.

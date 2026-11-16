@@ -14,6 +14,7 @@ const mammoth = require('mammoth');
 const WordExtractor = require('word-extractor');
 const XLSX = require('xlsx');
 const JSZip = require('jszip');
+const { Jimp } = require('jimp');
 const { spawn, spawnSync } = require('child_process');
 const { pipeline } = require('stream');
 const zlib = require('zlib');
@@ -1878,8 +1879,8 @@ function rgbaToBmp(rgba, w, h) {
   return bmp;
 }
 
-// raw RGB 缩略图（BGR 底行在前）→ BMP
-function rawThumbToBmp(raw) {
+// raw RGB 缩略图（BGR 底行在前）→ RGBA（顶行在前）
+function rawThumbToRgba(raw) {
   const w = raw.w, h = raw.h, wbytes = raw.wbytes, pix = raw.pix;
   const rgba = Buffer.alloc(w * h * 4);
   for (let y = 0; y < h; y++) {
@@ -1889,12 +1890,54 @@ function rawThumbToBmp(raw) {
       rgba[d] = pix[s + 2]; rgba[d + 1] = pix[s + 1]; rgba[d + 2] = pix[s]; rgba[d + 3] = 255;
     }
   }
-  return rgbaToBmp(rgba, w, h);
+  return { rgba: rgba, w: w, h: h };
 }
 
-// GDI+ 缩放到 64px 长边 JPEG。EncodedCommand 传脚本（路径引号/特殊字符零注入），
-// 异步子进程 + 15s 强杀（Bun.spawn，同 listShares 模式）；成功写 outFile 返回 true
+// raw RGB 缩略图（BGR 底行在前）→ BMP（备用桥接）
+function rawThumbToBmp(raw) {
+  const r = rawThumbToRgba(raw);
+  return rgbaToBmp(r.rgba, r.w, r.h);
+}
+
+// 64px 长边 JPEG 缩略图（q75、不放大）。jimp 纯 JS 解码缩放——无 native 依赖、
+// 完整打包进 exe（sharp 的 .node 走动态加载路径，bun build --compile 嵌不进）；
+// 成功写 outFile 返回 true。长尾格式（ICO 等）退回 PowerShell GDI+ 兜底。
 async function gdiThumb(srcFile, outFile) {
+  try {
+    const im = await Jimp.fromBuffer(fs.readFileSync(srcFile), JIMP_DECODE_OPTS);
+    await writeThumbJpeg(im, outFile);
+    return true;
+  } catch (e) {
+    return gdiFallback(srcFile, outFile);
+  }
+}
+
+// raw 像素直喂（PSD raw RGB / 合成图桥接，免 BMP 转码）；RGBA 顶行在前
+async function gdiThumbRgba(rgba, w, h, outFile) {
+  try {
+    await writeThumbJpeg(new Jimp({ data: Buffer.from(rgba), width: w, height: h }), outFile);
+    return true;
+  } catch (e) { return false; }
+}
+
+// 解码选项：jpeg-js 有 decompression-bomb 内存/分辨率上限，按本机服务端放开
+const JIMP_DECODE_OPTS = { 'image/jpeg': { maxMemoryUsageInMB: 1024, maxResolutionInMP: 100 } };
+
+// 等比缩放到 THUMB_EDGE 内（不放大）→ JPEG q75 写盘
+async function writeThumbJpeg(im, outFile) {
+  const w = im.width, h = im.height;
+  if (w > THUMB_EDGE || h > THUMB_EDGE) {
+    const nw = w >= h ? THUMB_EDGE : Math.max(1, Math.round(w * THUMB_EDGE / h));
+    const nh = w >= h ? Math.max(1, Math.round(h * THUMB_EDGE / w)) : THUMB_EDGE;
+    im.resize({ w: nw, h: nh });
+  }
+  const buf = await im.getBuffer('image/jpeg', { quality: 75 });
+  fs.writeFileSync(outFile, buf);
+}
+
+// PowerShell GDI+ 兜底（sharp 不支持的输入格式）。EncodedCommand 传脚本（路径引号/特殊
+// 字符零注入），异步子进程 + 15s 强杀（Bun.spawn，同 listShares 模式）；成功写 outFile 返回 true
+async function gdiFallback(srcFile, outFile) {
   const s = String(srcFile).replace(/'/g, "''");
   const o = String(outFile).replace(/'/g, "''");
   const ps = [
@@ -1967,10 +2010,8 @@ async function thumbFile(res, q, cfg) {
     }
     const raw = extractPsdRawThumb(head);
     if (raw) {
-      const bmpTmp = path.join(tdir, key + '.bmp');
-      fs.writeFileSync(bmpTmp, rawThumbToBmp(raw));
-      const ok = await gdiThumb(bmpTmp, outFile);
-      try { fs.unlinkSync(bmpTmp); } catch (e) {}
+      const rr = rawThumbToRgba(raw);
+      const ok = await gdiThumbRgba(rr.rgba, rr.w, rr.h, outFile);
       if (ok) return sendImageFile(res, outFile, 'image/jpeg');
     }
     // 变体兜底（缩略图专用）：fmt=1 但载荷实为 JPEG（4 字节前缀 + FFD8..FFD9），魔数扫描
@@ -1990,10 +2031,7 @@ async function thumbFile(res, q, cfg) {
         if (comp0 <= 1) {
           const comp = extractPsdComposite(head);
           if (comp && comp.width > 0 && comp.height > 0 && comp.width * comp.height <= 20000000) {
-            const bmpTmp = path.join(tdir, key + '.bmp');
-            fs.writeFileSync(bmpTmp, rgbaToBmp(comp.rgba, comp.width, comp.height));
-            const ok = await gdiThumb(bmpTmp, outFile);
-            try { fs.unlinkSync(bmpTmp); } catch (e) {}
+            const ok = await gdiThumbRgba(comp.rgba, comp.width, comp.height, outFile);
             if (ok) return sendImageFile(res, outFile, 'image/jpeg');
           }
         }
