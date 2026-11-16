@@ -700,9 +700,11 @@ body {
   }
   // —— 文件缩略图（2026-11-16）：图标位流式换低清小图，列表加载完全不受影响 ——
   // 行建好（=进入可视区）才排队；每张就绪立刻只换这一行的图标（逐张流式，不做批量刷新）；
-  // 并发 3，提不出缩略图保留原图标不重试；导航代际变了在途结果全部丢弃
+  // 并发 3，提不出缩略图保留原图标不重试；导航时清残留队列+取消在途下载（防旧队列塞新车道），
+  // 导航代际变了在途结果全部丢弃
   var THUMB_EXTS = ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'ico', 'webp', 'avif', 'apng', 'heic', 'heif', 'psd', 'psb', 'ai'];
   var thumbQ = [], thumbActive = 0;
+  var THUMB_INFLIGHT = [];   // 在途 Image 引用：导航时主动取消下载
   var THUMB_CONC = 3;
   function queueThumb(item) {
     if (item._thumb || item._thumbTried) return;
@@ -722,15 +724,24 @@ body {
     var gen = navGen;
     var url = '/api/thumb?path=' + enc(item.path) + '&m=' + (item.mtime || 0);
     var img = new Image();
+    img._item = item;
     img.onload = function () {
       thumbActive--;
+      var i = THUMB_INFLIGHT.indexOf(img);
+      if (i >= 0) THUMB_INFLIGHT.splice(i, 1);
       if (gen !== navGen) { kickThumb(); return; }   // 已导航到别处，丢弃
       item._thumb = url;
       patchIcon(item);
       kickThumb();
     };
-    img.onerror = function () { thumbActive--; kickThumb(); };   // 提不出缩略图，保留原图标
+    img.onerror = function () {
+      thumbActive--;
+      var i = THUMB_INFLIGHT.indexOf(img);
+      if (i >= 0) THUMB_INFLIGHT.splice(i, 1);
+      kickThumb();   // 提不出缩略图，保留原图标
+    };
     img.src = url;
+    THUMB_INFLIGHT.push(img);
   }
   function patchIcon(item) {
     // 流式更新：只换这一行的图标；行已被虚拟滚动回收则等重建时由 getIcon 直出
@@ -1767,6 +1778,14 @@ body {
   var navAbort = null;
   function beginNav() {
     var gen = ++navGen;
+    // —— 缩略图塞车修复（2026-11-16）：清残留队列 + 取消在途下载 ——
+    thumbQ = [];
+    while (THUMB_INFLIGHT.length) {
+      var im = THUMB_INFLIGHT.shift();
+      if (im._item) im._item._thumbTried = false;   // 被取消的允许下次重新排队
+      try { im.onload = im.onerror = null; im.src = ''; } catch (e) {}
+    }
+    thumbActive = 0;
     if (navAbort) { try { navAbort.abort(); } catch (e) {} }
     navAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     return gen;
