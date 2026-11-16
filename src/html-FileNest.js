@@ -3397,15 +3397,26 @@ async function cleanupCache(force) {
   if (!fs.existsSync(cfg.cacheDir)) return;
   const maxMs = (cfg.cacheMaxAgeHours || 24) * 3600000;
   const now = Date.now();
-  try {
-    for (const f of fs.readdirSync(cfg.cacheDir)) {
-      const full = path.join(cfg.cacheDir, f);
+  // 递归清理缓存文件（含 thumbs 等子目录），空目录顺手回收；写入端自建目录，删了可再生。
+  // lstat 不跟随符号链接、限深 8，保证绝不越出 cacheDir 真实子树。
+  const sweep = (dir, depth) => {
+    let entries;
+    try { entries = fs.readdirSync(dir); } catch (e) { return; }
+    for (const f of entries) {
+      const full = path.join(dir, f);
       try {
-        const st = fs.statSync(full);
-        if (st.isFile() && (force || now - st.mtimeMs > maxMs)) fs.unlinkSync(full);
+        const st = fs.lstatSync(full);
+        if (st.isSymbolicLink()) continue;
+        if (st.isDirectory()) {
+          if (depth < 8) sweep(full, depth + 1);
+          try { if (fs.readdirSync(full).length === 0) fs.rmdirSync(full); } catch (e) {}
+        } else if (st.isFile() && (force || now - st.mtimeMs > maxMs)) {
+          fs.unlinkSync(full);
+        }
       } catch (e) {}
     }
-  } catch (e) {}
+  };
+  sweep(cfg.cacheDir, 0);
 }
 
 // —— 临时文件兜底回收（#11/#12）——
