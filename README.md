@@ -295,7 +295,12 @@ html-FileNest/
 
 ## Changelog
 
-**v2.1.0.4 (Latest)**
+**v2.2.0.0 (Latest)**
+
+  **New features**
+  - **SQLite metadata index — instant directory listings**: a background global scan builds a local index (`file-index.db` next to the config), and directory listings are answered straight from it — a 3000-entry folder now responds in ~20 ms instead of a multi-second disk walk. Freshness is maintained two ways: entering a folder runs an incremental disk calibration (`?fresh=1`) that updates the index in place, and every write operation (create / delete / rename / move / copy / upload / recycle restore / extract) synchronizes the index immediately — no stale "ghost" entries after page operations. A folder the index has not seen yet falls back to a real-time scan (never an empty screen), a damaged index degrades gracefully to scan mode, and the full-tree scan stops as soon as you enter a folder so browsing never waits on the indexer.
+
+  **v2.1.0.4**
 
   **New features**
   - **File thumbnails in list icons (images / PSD / AI)**: new `GET /api/thumb` returns a low-resolution (64px-edge JPEG) thumbnail for image files, PSD/PSB (embedded JPEG preview) and AI files (best-effort embedded preview), with SVG passthrough; files without an extractable thumbnail keep their type icon. Icons swap progressively as each thumbnail arrives (visible rows first, 3 concurrent requests) and never block directory loading. Generated thumbnails are cached under `cacheDir/thumbs`, keyed by mtime+size.
