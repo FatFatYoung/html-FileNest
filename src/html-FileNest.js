@@ -424,6 +424,9 @@ function runServer() {
     }
   }
   setTimeout(() => cleanupCache(false).catch(() => {}), 5000);
+  // 后台全局扫描建索引库（2026-11-17）：延时 3s 让服务先就绪；低速低优先级，
+  // 页面进入任一非盘符/非根主机目录即永久停止（stopGlobalScan）
+  setTimeout(() => { startGlobalScan(cfg).catch(() => {}); }, 3000);
   // 临时文件兜底清扫（#11/#12）：启动后延时首扫，此后每 6h
   setTimeout(() => { try { sweepStaleTemp(); } catch (_) {} }, 7000);
   setInterval(() => { try { sweepStaleTemp(); } catch (_) {} }, 6 * 3600000).unref();
@@ -942,9 +945,168 @@ async function desktopInfo(res, cfg) {
   sendJson(res, 200, { ok: true, path: dir, items: items });
 }
 
+// ============ 文件元数据索引（SQLite，2026-11-17）============
+// 服务启动即后台全局扫描建库（位置/文件名/类型/大小/修改时间）；
+// 页面进入任一非盘符/非根主机目录 = 用户真实连接 → 全局扫描立即停止且永不再启（用户优先，
+// 宁可库不完整也绝不抢用户 IO）；未扫完的目录靠进入时的局部扫描逐目录补。
+// /api/ls 优先查库秒回（fromDb:true），前端随后以 ?fresh=1 触发该目录局部扫描校准
+// （增删改=该目录行全量替换入库）并刷新界面；库内没有的冷目录直接走实时扫描兜底。
+// 索引任何异常（损坏/被锁/环境异常）整体降级为实时扫描（等同旧行为），绝不阻塞请求。
+const INDEX_DB_PATH = path.join(INSTALL_DIR, 'file-index.db');
+let _idxDb = null, _idxDead = false;
+function indexDb() {
+  if (_idxDead) return null;
+  if (_idxDb) return _idxDb;
+  try {
+    const { Database } = require('bun:sqlite');
+    const db = new Database(INDEX_DB_PATH, { create: true });
+    db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS dirs(path TEXT PRIMARY KEY COLLATE NOCASE, scanned_at INTEGER);' +
+      'CREATE TABLE IF NOT EXISTS files(' +
+      ' path TEXT PRIMARY KEY COLLATE NOCASE, parent TEXT NOT NULL COLLATE NOCASE,' +
+      ' name TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, ext TEXT NOT NULL);' +
+      'CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent);');
+    _idxDb = db;
+    return db;
+  } catch (e) {
+    _idxDead = true;
+    log('index db disabled: ' + (e && e.message || e));
+    return null;
+  }
+}
+
+// 全局扫描停止标志（一次性、永不再启）
+let _scanStopped = false;
+function stopGlobalScan() {
+  if (_scanStopped) return;
+  _scanStopped = true;
+  log('global scan stopped by user connection');
+}
+
+// 页面进入任一非盘符/非根主机目录 = 用户真实连接（2026-11-17 定）：
+// 盘符根（C:\）与裸主机根（\\host）不触发，进入任一更深层目录即触发停止
+function isRootLevel(dir) {
+  return isBareHost(dir) || /^[A-Za-z]:[\\\/]?$/.test(dir);
+}
+
+// 局部校准写库：增删改 = 该目录行全量替换（单事务原子），dirs 记"已扫过"标记
+function writeDirIndex(dir, items) {
+  const db = indexDb();
+  if (!db) return;
+  const now = Date.now();
+  db.transaction(() => {
+    db.query('DELETE FROM files WHERE parent = ?').run(dir);
+    const ins = db.query('INSERT OR REPLACE INTO files(path,parent,name,type,size,mtime,ext) VALUES(?,?,?,?,?,?,?)');
+    for (const it of items) ins.run(it.path, dir, it.name, it.type, it.size || 0, it.mtime || 0, it.ext || '');
+    db.query('INSERT OR REPLACE INTO dirs(path,scanned_at) VALUES(?,?)').run(dir, now);
+  })();
+}
+
+// 查库：{scanned, items}；scanned=false = 冷目录（走实时扫描兜底，绝不空屏）
+function queryDirIndex(dir) {
+  const db = indexDb();
+  if (!db) return { scanned: false, items: [] };
+  const d = db.query('SELECT path FROM dirs WHERE path = ?').get(dir);
+  if (!d) return { scanned: false, items: [] };
+  const rows = db.query('SELECT path,name,type,size,mtime,ext FROM files WHERE parent = ?').all(dir);
+  return {
+    scanned: true,
+    items: rows.map(r => ({ name: r.name, path: r.path, type: r.type, size: r.size, mtime: r.mtime, ext: r.ext }))
+  };
+}
+
+// 源头定序（2026-11-16）：目录优先固定（不随方向翻转），语义与前端 sortItems 一致；
+// 库快照与实时扫描共用同一比较函数，两条路径排序结果逐项一致
+function sortDirItems(items, sortKey, sortAsc) {
+  items.sort((a, b) => {
+    if (a.type === 'dir' && b.type !== 'dir') return -1;
+    if (b.type === 'dir' && a.type !== 'dir') return 1;
+    let r = 0;
+    if (sortKey === 'size') r = (a.size || 0) - (b.size || 0);
+    else if (sortKey === 'mtime') r = (a.mtime || 0) - (b.mtime || 0);
+    else if (sortKey === 'type') r = (a.ext || '').localeCompare(b.ext || '');
+    if (r === 0) r = a.name.localeCompare(b.name, 'zh', { numeric: true });
+    return sortAsc ? r : -r;
+  });
+}
+
+function expandScanRoots(cfg) {
+  const roots = ((cfg.sources || {}).default || {}).roots || [];
+  const out = [];
+  for (const r of roots) {
+    if (r === '*') {
+      for (let c = 65; c <= 90; c++) {
+        const d = String.fromCharCode(c) + ':\\';
+        try { fs.accessSync(d); out.push(d); } catch (e) {}
+      }
+    } else out.push(r);
+  }
+  return out;
+}
+
+// 全局扫描建库：目录串行 + 目录内 8 路并发 stat（给前台请求留足 UV 线程池余量，杜绝塞车），
+// 每 256 条目检查停止标志；符号链接/junction 目录不入队（防链接环）；无权限/坏盘跳过不入库
+// （冷路径会报真实错误）；条目 key 统一由 path.win32.join 生成，与 listDir 同源保证库命中
+async function startGlobalScan(cfg) {
+  if (!indexDb()) return;
+  const queue = expandScanRoots(cfg);
+  if (!queue.length) return;
+  log('global scan start: ' + queue.join(', '));
+  let ndir = 0, nfile = 0;
+  while (queue.length) {
+    if (_scanStopped) { log('global scan aborted: ' + ndir + ' dirs, ' + nfile + ' files'); return; }
+    const dir = queue.shift();
+    let items = [];
+    try {
+      const ents = await fs.promises.readdir(dir, { withFileTypes: true });
+      let _n = 0;
+      for (const ent of ents) {
+        if ((++_n & 255) === 0 && _scanStopped) { log('global scan aborted: ' + ndir + ' dirs'); return; }
+        const full = path.win32.join(dir, ent.name);
+        const link = ent.isSymbolicLink();
+        if (isDenied(full, cfg)) continue;
+        items.push({
+          name: ent.name, path: full,
+          type: ent.isDirectory() ? 'dir' : ent.isFile() ? 'file' : 'other',
+          size: 0, mtime: 0,
+          ext: (path.win32.extname(ent.name) || '').toLowerCase()
+        });
+        if (!link && ent.isDirectory()) queue.push(full);
+      }
+    } catch (e) { continue; }
+    // 8 路消费式并发 stat 补齐 size/mtime/type（快者多干，无批栅栏）
+    let idx = 0;
+    const workers = [];
+    for (let w = 0; w < 8 && w < items.length; w++) {
+      workers.push((async () => {
+        while (idx < items.length) {
+          if (_scanStopped) return;
+          const it = items[idx++];
+          try {
+            const s = await fs.promises.stat(it.path);
+            it.type = s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other';
+            it.size = s.size;
+            it.mtime = s.mtimeMs;
+          } catch (e) {}
+        }
+      })());
+    }
+    await Promise.all(workers);
+    if (_scanStopped) { log('global scan aborted: ' + ndir + ' dirs'); return; }
+    try { writeDirIndex(dir, items); } catch (e) {}
+    ndir++; nfile += items.length;
+    if ((ndir % 200) === 0) log('global scan: ' + ndir + ' dirs, ' + nfile + ' files');
+    await sleep(0);   // 让出事件循环：前台请求永远优先
+  }
+  log('global scan done: ' + ndir + ' dirs, ' + nfile + ' files');
+}
+
 
 async function listDir(req, res, q, cfg) {
   const dir = resolveAllowedPath(q.path, cfg);
+  // 页面进入任一非盘符/非根主机目录 = 用户真实连接：全局扫描立即永久停止（用户优先）
+  if (!isRootLevel(dir)) stopGlobalScan();
   // 客户端已断开（AbortController）则放弃剩余处理：否则旧请求跑完才放行新
   // 请求，快速进/返回时服务端排队塞车（2026-11-15）
   const dead = () => !!(req && req.signal && req.signal.aborted);
@@ -967,6 +1129,19 @@ async function listDir(req, res, q, cfg) {
       : b.name.localeCompare(a.name, 'zh', { numeric: true }));
     sendJson(res, 200, { ok: true, path: dir, fast, items });
     return;
+  }
+  // 快路径（2026-11-17）：库内已扫过的目录查库秒回（fromDb），前端随后 ?fresh=1 局部校准；
+  // 冷目录/库禁用/任何异常一律落回实时扫描兜底（=旧行为），绝不空屏、绝不塞车
+  if (q.fresh !== '1' && !isBareHost(dir)) {
+    try {
+      const hit = queryDirIndex(dir);
+      if (hit.scanned) {
+        const items = hit.items;
+        sortDirItems(items, sortKey, sortAsc);
+        sendJson(res, 200, { ok: true, path: dir, fromDb: true, items });
+        return;
+      }
+    } catch (e) {}
   }
   const st = await fs.promises.stat(dir);
   if (!st.isDirectory()) throw new Error('not a directory');
@@ -1028,17 +1203,11 @@ async function listDir(req, res, q, cfg) {
     await Promise.all(workers);
   }
   // 源头定序（2026-11-16）：目录优先固定（不随方向翻转），语义与前端 sortItems 一致
-  items.sort((a, b) => {
-    if (a.type === 'dir' && b.type !== 'dir') return -1;
-    if (b.type === 'dir' && a.type !== 'dir') return 1;
-    let r = 0;
-    if (sortKey === 'size') r = (a.size || 0) - (b.size || 0);
-    else if (sortKey === 'mtime') r = (a.mtime || 0) - (b.mtime || 0);
-    else if (sortKey === 'type') r = (a.ext || '').localeCompare(b.ext || '');
-    if (r === 0) r = a.name.localeCompare(b.name, 'zh', { numeric: true });
-    return sortAsc ? r : -r;
-  });
+  sortDirItems(items, sortKey, sortAsc);
 
+  // 局部校准入库（2026-11-17）：增删改 = 该目录行全量替换，同步落库后才响应——
+  // "响应即已入库"语义原子；单目录批量事务毫秒级，不构成塞车
+  try { writeDirIndex(dir, items); } catch (e) {}
   sendJson(res, 200, { ok: true, path: dir, fast, items });
 }
 
