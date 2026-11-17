@@ -1217,8 +1217,8 @@ async function listDir(req, res, q, cfg) {
       name: ent.name,
       path: full,
       type,
-      size,
-      mtime,
+      size: fast ? null : size,
+      mtime: fast ? null : mtime,
       ext: (path.win32.extname(ent.name) || '').toLowerCase()
     });
   }
@@ -1247,8 +1247,10 @@ async function listDir(req, res, q, cfg) {
   sortDirItems(items, sortKey, sortAsc);
 
   // 局部校准入库（2026-11-17）：增删改 = 该目录行全量替换，同步落库后才响应——
-  // "响应即已入库"语义原子；单目录批量事务毫秒级，不构成塞车
-  try { writeDirIndex(dir, items); } catch (e) {}
+  // "响应即已入库"语义原子；单目录批量事务毫秒级，不构成塞车。
+  // fast 骨架（size/mtime 未 stat）不落库——防占位值污染索引（2026-11-18），
+  // 补齐阶段的全量请求会把完整数据落库
+  if (!fast) { try { writeDirIndex(dir, items); } catch (e) {} }
   sendJson(res, 200, { ok: true, path: dir, fast, items });
 }
 

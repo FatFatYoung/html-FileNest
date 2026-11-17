@@ -1765,8 +1765,8 @@ body {
       state.historyIdx = state.history.length - 1;
     }
     render();
-    // ② 一次性读取（按用户排序方式，服务端源头定序）
-    return apiGet('/api/ls?path=' + enc(target.path) + '&sort=' + enc(state.sortKey) + '&asc=' + (state.sortAsc ? 1 : 0), navAbort ? navAbort.signal : undefined).then(function (r) {
+    // ② 一次性读取（按用户排序方式，服务端源头定序；fast=1 骨架秒出、后台补齐——2026-11-18 两阶段）
+    return apiGet('/api/ls?path=' + enc(target.path) + '&sort=' + enc(state.sortKey) + '&asc=' + (state.sortAsc ? 1 : 0) + '&fast=1', navAbort ? navAbort.signal : undefined).then(function (r) {
       if (gen !== navGen) return;   // 迟到响应丢弃（已导航到别处）
       state.current = { path: r.path, source: target.source };
       state.loading = false;
@@ -1783,7 +1783,7 @@ body {
         state._viewCache = null;   // items 原地追加、引用未换，不失效会命中旧视图
         render();
         if (i < all.length) { setTimeout(step, 0); return; }
-        cachePut(r.path, arr);   // 全量到齐写缓存，后退/前进秒开
+        if (!r.fast) cachePut(r.path, arr);   // 全量到齐写缓存（fast 骨架不进缓存，补齐后再写）
       })();
       // ④ 索引库快照已展现 → 该目录局部扫描校准（增删改入库）→ 刷新界面（2026-11-17）
       if (r.fromDb) {
@@ -1795,6 +1795,17 @@ body {
           render();
           cachePut(r2.path, state.items);   // 校准后的最新数据写缓存
         }).catch(function () {});   // 校准失败不打扰（界面已有库快照）
+      } else if (r.fast && all.length) {
+        // ⑤ 两阶段补齐（2026-11-18）：fast 骨架已上屏 → 后台全量 stat 补齐 size/mtime → 整体替换刷新；
+        //    迟到/失败都不打扰（骨架已可操作，下次进入自动重试）
+        apiGet('/api/ls?path=' + enc(target.path) + '&sort=' + enc(state.sortKey) + '&asc=' + (state.sortAsc ? 1 : 0), navAbort ? navAbort.signal : undefined).then(function (r2) {
+          if (gen !== navGen) return;   // 已导航到别处，丢弃补齐结果
+          if (!r2 || !r2.items || r2.fast) return;
+          state.items = r2.items;
+          state._viewCache = null;
+          render();
+          cachePut(r2.path, state.items);   // 补齐后的完整数据写缓存
+        }).catch(function () {});
       }
     }).catch(function (e) {
       if (gen !== navGen) return;   // 中止/过期的错误不打扰
