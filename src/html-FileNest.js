@@ -1016,6 +1016,47 @@ function queryDirIndex(dir) {
   };
 }
 
+// —— 写操作库同步（2026-11-17）：页面删除/新建/移动/复制等写操作逐行同步库，
+// 消除"写后读到旧数据"的幽灵窗口；目录级影响（删/改名/移动目录、解压、批量恢复）
+// 用 indexInvalidate 子树失效兜底（下次进入实时校准自愈）。任何异常只记日志，
+// 绝不影响写操作本身——库坏了写操作照样成功（实时扫描永远兜底）。
+function indexRowUpsert(parent, name, type, size, mtime) {
+  const db = indexDb(); if (!db) return;
+  try {
+    const full = path.win32.join(parent, name);
+    db.query('INSERT OR REPLACE INTO files(path,parent,name,type,size,mtime,ext) VALUES(?,?,?,?,?,?,?)')
+      .run(full, parent, name, type, size || 0, mtime || 0, (path.win32.extname(name) || '').toLowerCase());
+  } catch (e) { log('index upsert skip: ' + (e && e.message || e)); }
+}
+function indexInvalidate(full) {
+  // 子树失效：清自己（含父目录里的行）与整个子树的"已扫过"标记和条目行；
+  // substr 前缀匹配防 LIKE 通配符注入，COLLATE NOCASE 对齐路径大小写
+  const db = indexDb(); if (!db) return;
+  try {
+    const pre = String(full) + '\\';
+    db.query('DELETE FROM dirs WHERE path = ? COLLATE NOCASE OR substr(path, 1, ?) = ? COLLATE NOCASE').run(full, pre.length, pre);
+    db.query('DELETE FROM files WHERE path = ? COLLATE NOCASE OR substr(path, 1, ?) = ? COLLATE NOCASE').run(full, pre.length, pre);
+  } catch (e) { log('index invalidate skip: ' + (e && e.message || e)); }
+}
+function indexMove(src, dst) {
+  // 移动/改名：旧路径子树失效 + 新路径子树失效（防旧残留）+ 新行按磁盘现状写入
+  indexInvalidate(src);
+  indexInvalidate(dst);
+  try {
+    const st = fs.statSync(dst);
+    indexRowUpsert(path.win32.dirname(dst), path.win32.basename(dst), st.isDirectory() ? 'dir' : 'file', st.size, st.mtimeMs);
+  } catch (e) {}
+}
+function indexWrite(full) {
+  // 新建/上传/复制/恢复落成后：按磁盘现状写自己一行；目录先做子树失效（防旧残留）
+  try {
+    const st = fs.statSync(full);
+    const isDir = st.isDirectory();
+    if (isDir) indexInvalidate(full);
+    indexRowUpsert(path.win32.dirname(full), path.win32.basename(full), isDir ? 'dir' : 'file', st.size, st.mtimeMs);
+  } catch (e) {}
+}
+
 // 源头定序（2026-11-16）：目录优先固定（不随方向翻转），语义与前端 sortItems 一致；
 // 库快照与实时扫描共用同一比较函数，两条路径排序结果逐项一致
 function sortDirItems(items, sortKey, sortAsc) {
@@ -2460,6 +2501,7 @@ async function mkdirOp(res, data, cfg) {
   }
   const full = path.win32.join(dir, name);
   await fs.promises.mkdir(full);
+  indexWrite(full);   // 库同步
   sendJson(res, 200, { ok: true, path: full });
 }
 
@@ -2477,6 +2519,7 @@ async function mkfileOp(res, data, cfg) {
     if (shortcutTarget.length > 2000 || /[\x00-\x1f]/.test(shortcutTarget)) return sendJson(res, 400, { ok: false, error: 'invalid shortcut target' });
     if (fs.existsSync(full)) return sendJson(res, 409, { ok: false, error: 'file exists' });
     await createShortcutLnk(full, shortcutTarget);
+    indexWrite(full);   // 库同步
     return sendJson(res, 200, { ok: true, path: full });
   }
   const extCheck = checkExtension(full, cfg);
@@ -2500,6 +2543,7 @@ async function mkfileOp(res, data, cfg) {
   } else {
     await fs.promises.writeFile(full, '', { flag: 'wx' });   // 已存在则报错，绝不覆盖
   }
+  indexWrite(full);   // 库同步
   sendJson(res, 200, { ok: true, path: full });
 }
 
@@ -2884,6 +2928,7 @@ async function renameOp(res, data, cfg) {
     if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   }
   await fs.promises.rename(src, dst);
+  indexMove(src, dst);   // 库同步：旧行移除+新行写入，子树失效防幽灵
   sendJson(res, 200, { ok: true, path: dst });
 }
 
@@ -2923,10 +2968,12 @@ async function rmOp(res, data, cfg) {
   if (data.purge) {
     // 彻底删除（回收站专用入口）
     await fs.promises.rm(target, { recursive: true, force: true });
+    indexInvalidate(target);   // 库同步：子树清扫
     return sendJson(res, 200, { ok: true, purged: true });
   }
   // 默认：移入回收站（可恢复），不再直接删除
   const id = await recycleMove(target, st);
+  indexInvalidate(target);   // 库同步：子树清扫
   sendJson(res, 200, { ok: true, recycled: id });
 }
 
@@ -2960,6 +3007,7 @@ async function recycleRestoreOp(res, data, cfg) {
   const info = list.find(x => x.id === data.id);
   if (!info) throw new Error('recycle item not found');
   const dest = await recycleRestoreOne(info);
+  indexWrite(dest);   // 库同步
   await recycleSave(list.filter(x => x.id !== info.id));
   sendJson(res, 200, { ok: true, restored: dest });
 }
@@ -2969,7 +3017,7 @@ async function recycleRestoreAllOp(res) {
   const remain = [];
   let count = 0;
   for (const info of list) {
-    try { await recycleRestoreOne(info); count++; } catch (e) { remain.push(info); }
+    try { const d = await recycleRestoreOne(info); indexWrite(d); count++; } catch (e) { remain.push(info); }
   }
   await recycleSave(remain);
   sendJson(res, 200, { ok: true, count, failed: remain.length });
@@ -3168,6 +3216,7 @@ async function extractAllOp(res, data, cfg) {
       await fs.promises.rm(tmp, { recursive: true, force: true });
     }
   }
+  indexInvalidate(dest);   // 库同步：解压到压缩包所在文件夹，该目录子树失效兜底（下次进实时校准）
   sendJson(res, 200, { ok: true, written, skipped });
 }
 
@@ -3190,6 +3239,7 @@ async function mvOp(res, data, cfg) {
       throw e;
     }
   }
+  indexMove(src, dst);   // 库同步（含 EXDEV 复制+删除降级路径）
   sendJson(res, 200, { ok: true });
 }
 
@@ -3206,6 +3256,7 @@ async function cpOp(res, data, cfg) {
     if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   }
   await copyRecursive(src, dst);
+  indexWrite(dst);   // 库同步
   sendJson(res, 200, { ok: true });
 }
 
@@ -3327,6 +3378,7 @@ async function uploadOp(req, res, q, cfg) {
 
   try { if (fs.existsSync(full)) fs.unlinkSync(full); } catch (_) {}
   fs.renameSync(tmp, full);
+  indexWrite(full);   // 库同步
   _activeUploadTmps.delete(tmp);
   sendJson(res, 200, { ok: true, path: full, size: fs.statSync(full).size });
 }
