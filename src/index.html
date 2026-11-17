@@ -1772,17 +1772,30 @@ body {
       state.loading = false;
       // ③ 页面流式加载文件：分批进列表逐批渲染，界面全程可操作
       var all = r.items || [];
+      var arr = []; state.items = arr;   // 分批目标数组（?fresh=1 校准结果整体替换时以此判停）
       var BATCH = 1000;
       var i = 0;
       (function step() {
         if (gen !== navGen) return;   // 已导航到别处，中止流式加载
+        if (state.items !== arr) return;   // 已被局部校准结果整体替换
         var end = Math.min(all.length, i + BATCH);
-        while (i < end) state.items.push(all[i++]);
+        while (i < end) arr.push(all[i++]);
         state._viewCache = null;   // items 原地追加、引用未换，不失效会命中旧视图
         render();
         if (i < all.length) { setTimeout(step, 0); return; }
-        cachePut(r.path, state.items);   // 全量到齐写缓存，后退/前进秒开
+        cachePut(r.path, arr);   // 全量到齐写缓存，后退/前进秒开
       })();
+      // ④ 索引库快照已展现 → 该目录局部扫描校准（增删改入库）→ 刷新界面（2026-11-17）
+      if (r.fromDb) {
+        apiGet('/api/ls?path=' + enc(target.path) + '&sort=' + enc(state.sortKey) + '&asc=' + (state.sortAsc ? 1 : 0) + '&fresh=1', navAbort ? navAbort.signal : undefined).then(function (r2) {
+          if (gen !== navGen) return;   // 已导航到别处，丢弃校准结果
+          if (!r2 || !r2.items) return;
+          state.items = r2.items;
+          state._viewCache = null;
+          render();
+          cachePut(r2.path, state.items);   // 校准后的最新数据写缓存
+        }).catch(function () {});   // 校准失败不打扰（界面已有库快照）
+      }
     }).catch(function (e) {
       if (gen !== navGen) return;   // 中止/过期的错误不打扰
       state.loading = false;
