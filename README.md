@@ -295,7 +295,16 @@ html-FileNest/
 
 ## Changelog
 
-**v2.2.0.0 (Latest)**
+**v2.2.0.1 (Latest)**
+
+  **New features**
+  - **Instant folder opening on slow storage (two-phase loading)**: a folder now opens immediately showing names and icons while file sizes and modification times stream in right behind them — a 10 000-entry folder on a slow NAS opens in about a second instead of 20+ seconds. Directories already covered by the SQLite index still open instantly with full details.
+  - **Clean upgrade, nothing lost**: running a newer installer now removes the previous version automatically (running service, scheduled task, program files) and installs fresh — everything that belongs to the user is inherited untouched: `config.json`, favorites, the recycle bin, the HTTPS certificate (no browser re-trust after upgrading), and the `file-index.db` SQLite index (carried over, never rebuilt).
+
+  **Improvements**
+  - Double-clicking the installer while the service is running now upgrades in place instead of showing "already running".
+
+**v2.2.0.0**
 
   **New features**
   - **SQLite metadata index — instant directory listings**: a background global scan builds a local index (`file-index.db` next to the config), and directory listings are answered straight from it — a 3000-entry folder now responds in ~20 ms instead of a multi-second disk walk. Freshness is maintained two ways: entering a folder runs an incremental disk calibration (`?fresh=1`) that updates the index in place, and every write operation (create / delete / rename / move / copy / upload / recycle restore / extract) synchronizes the index immediately — no stale "ghost" entries after page operations. A folder the index has not seen yet falls back to a real-time scan (never an empty screen), a damaged index degrades gracefully to scan mode, and the full-tree scan stops as soon as you enter a folder so browsing never waits on the indexer.
