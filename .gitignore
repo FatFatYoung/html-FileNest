@@ -3,3 +3,6 @@ dist/
 *.pfx
 *.cer
 .cache/
+
+# local test scratch (never ship)
+_thumbtest/
