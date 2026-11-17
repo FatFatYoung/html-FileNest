@@ -41,7 +41,11 @@ const CONFIG_PATH = path.join(INSTALL_DIR, 'config.json');
 const PFX_PATH    = path.join(INSTALL_DIR, 'filenest.pfx');
 const CER_PATH    = path.join(INSTALL_DIR, 'filenest.cer');
 const VBS_PATH    = path.join(INSTALL_DIR, 'start.vbs');
-const TASK_NAME   = 'html-FileNest';
+// 沙箱锚点连带作用域（2026-11-18）：FIN_INSTALL_DIR 下任务名/证书主题加后缀，沙箱安装
+// 与真实安装完全隔离——修复"产品启动清理 bug"（沙箱清理曾误删默认安装的任务/证书/文件）
+const SANDBOX     = !!process.env.FIN_INSTALL_DIR;
+const TASK_NAME   = SANDBOX ? 'html-FileNest-fin-test' : 'html-FileNest';
+const CERT_CN     = SANDBOX ? 'html-FileNest FinTest' : 'html-FileNest';
 const PFX_PASS    = 'htmlfilenest';
 
 // 默认端口（避让原 htmlFileAgent 的 19000/19443）
@@ -160,16 +164,106 @@ function normalizeConfig(cfg) {
 }
 
 // ============ 部署 ============
+// 删除文件/目录，带重试（杀进程后文件句柄可能延迟释放；一次性整目录盲删抛错会半途而废留下残留）
+async function removeWithRetry(p, isDir) {
+  for (let i = 0; i < 5; i++) {
+    try {
+      if (!fs.existsSync(p)) return true;
+      if (isDir) fs.rmSync(p, { recursive: true, force: true });
+      else fs.rmSync(p, { force: true });
+      return true;
+    } catch (e) {}
+    await sleep(300);
+  }
+  return false;
+}
+
+// 强卸载（2026-11-18 自特例版引入，按用户要求收窄）：安装/升级前清旧版程序
+// （进程+计划任务+安装目录程序文件），只针对 html-FileNest 本产品；
+// 用户数据一律保留——config.json/favorites.json/recycle_bin/recycle_meta.json/
+// upload-journal.json/index.html/index.html.bak/filenest.pfx/filenest.cer/file-index.db*，
+// 升级后原配置、原证书信任与原索引库自动继承（2.2.0.0 起 SQLite 索引升级不重建）。
+// 证书信任链升级时一并继承（不清证书库、保留 filenest.pfx/cer，浏览器免重信任），
+// 显式卸载 --uninstall 才清证书。
+// FIN_INSTALL_DIR 沙箱作用域：候选目录只认 INSTALL_DIR、进程按 exe 路径定点杀、
+// 任务用沙箱名（TASK_NAME），绝不触碰默认安装（清理 bug 修复）。
+async function uninstallProduct(name, knownDir) {
+  // 0) 收集安装目录候选（必须在删计划任务之前提取，删了任务线索就没了）：
+  //    已知目录 + 计划任务 XML 里含产品名的绝对路径所在目录 + 约定目录 C:\<name>
+  const candidates = [];
+  if (SANDBOX) {
+    candidates.push(INSTALL_DIR);
+  } else {
+    if (knownDir) candidates.push(knownDir);
+    try {
+      const r = spawnSync('schtasks', ['/query', '/tn', TASK_NAME, '/xml'],
+        { encoding: 'utf8', windowsHide: true });
+      const all = ((r.stdout || '').match(/[A-Za-z]:\\[^<"\r\n]*/g) || []);
+      for (const p of all) {
+        if (p.toLowerCase().includes(name.toLowerCase())) {
+          const isFile = /\.(exe|vbs|cmd|bat|ps1)$/i.test(p);
+          candidates.push(isFile ? path.win32.dirname(p) : p);
+        }
+      }
+    } catch (e) {}
+    candidates.push('C:\\' + name);
+  }
+  // 1) 杀进程并等真正退出（句柄释放后才能删文件）。正常=按进程名杀（排除自身，
+  //    安装器可能与产品同名）；沙箱=按 exe 路径定点杀，不伤真实安装的服务
+  const selfPid = process.pid;
+  const psQ = s => "'" + String(s).replace(/'/g, "''") + "'";
+  const killQ = SANDBOX
+    ? "Get-CimInstance Win32_Process -Filter \"Name='" + name + ".exe'\" | " +
+      "Where-Object { $_.ProcessId -ne " + selfPid + " -and $_.ExecutablePath -like " + psQ(INSTALL_DIR + '\\*') + " } | " +
+      "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    : "Get-Process -Name " + psQ(name) + " -ErrorAction SilentlyContinue | " +
+      "Where-Object { $_.Id -ne " + selfPid + " } | " +
+      "ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }";
+  const aliveQ = SANDBOX
+    ? "Write-Output (@(Get-CimInstance Win32_Process -Filter \"Name='" + name + ".exe'\" | " +
+      "Where-Object { $_.ProcessId -ne " + selfPid + " -and $_.ExecutablePath -like " + psQ(INSTALL_DIR + '\\*') + " }).Count)"
+    : "Write-Output (@(Get-Process -Name " + psQ(name) + " -ErrorAction SilentlyContinue | " +
+      "Where-Object { $_.Id -ne " + selfPid + " }).Count)";
+  try { runPS(killQ); } catch (e) {}
+  for (let i = 0; i < 10; i++) {
+    let alive = '';
+    try { alive = runPS(aliveQ).stdout || ''; } catch (e) { break; }
+    if (!/[1-9]/.test(alive.trim())) break;
+    await sleep(300);
+  }
+  // 2) 删计划任务（TASK_NAME；沙箱名与真实安装隔离）
+  spawnSync('schtasks', ['/end', '/tn', TASK_NAME], { stdio: 'ignore', windowsHide: true });
+  spawnSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'ignore', windowsHide: true });
+  // 3) 清安装目录程序文件（逐候选；发现型候选的目录名必须等于产品名才删，防误删）
+  //    不整目录盲删——盲删会把用户配置一锅端；被占用文件抛错时又半途而废留下残留
+  const keep = ['config.json', 'favorites.json', 'recycle_bin', 'recycle_meta.json', 'upload-journal.json',
+    'index.html', 'index.html.bak', 'filenest.pfx', 'filenest.cer',
+    'file-index.db', 'file-index.db-wal', 'file-index.db-shm'];
+  for (const dir of candidates) {
+    try {
+      // 已知目录（knownDir/INSTALL_DIR）由调用方明确指定不做目录名校验；
+      // 发现型候选（任务 XML/约定目录）必须目录名==产品名，防误删
+      const explicit = dir === knownDir || dir === INSTALL_DIR;
+      if (!explicit && path.win32.basename(dir).toLowerCase() !== name.toLowerCase()) continue;
+      if (!fs.existsSync(dir)) continue;
+      for (const f of fs.readdirSync(dir)) {
+        if (keep.indexOf(f.toLowerCase()) >= 0) continue;
+        const full = path.join(dir, f);
+        const isDir = fs.statSync(full).isDirectory();
+        if (!(await removeWithRetry(full, isDir))) log(name + ' cleanup locked, left: ' + full);
+      }
+    } catch (e) {}
+  }
+  log(name + ' cleanup done');
+}
+
 async function doAuto() {
   const cfg = loadConfig();
-  if (fs.existsSync(EXE_PATH) && taskExists(TASK_NAME) && await portOpen(cfg.ports.http)) {
-    showMsg(APP_NAME + ' 已在运行',
-      '· 文件管理器：http://127.0.0.1:' + cfg.ports.http + '/\n' +
-      '· 健康检查：http://127.0.0.1:' + cfg.ports.http + '/ping',
-      'Information');
-    return;
-  }
+  // 安装/升级=全新替换：先强卸载旧版再安装（2026-11-18 自特例版引入）。
+  // 原"已在运行"拦截会在服务运行时直接 return，升级永远轮不到（特例版 2026-11-16 教训）
   if (!isAdmin()) { elevateSelf([]); return; }
+  // 只卸载 html-FileNest 程序文件，用户配置/证书/索引库一律保留（见 uninstallProduct 的 keep 白名单）
+  await uninstallProduct('html-FileNest', INSTALL_DIR);
   await install();
   showMsg(APP_NAME + ' 部署成功',
     '· 文件管理器：http://127.0.0.1:' + cfg.ports.http + '/\n' +
@@ -255,7 +349,7 @@ function doUninstall() {
       "ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }");
   } catch (e) {}
   try {
-    runPS("Get-ChildItem Cert:\\LocalMachine\\Root | Where-Object {$_.Subject -like '*html-FileNest*'} | " +
+    runPS("Get-ChildItem Cert:\\LocalMachine\\Root | Where-Object {$_.Subject -like '*" + CERT_CN + "*'} | " +
       "Remove-Item -Force -ErrorAction SilentlyContinue");
   } catch (e) {}
   [VBS_PATH, PFX_PATH, CER_PATH].forEach(f => {
@@ -3756,7 +3850,7 @@ function makeCert() {
   const ps = `
 $ErrorActionPreference = 'Stop'
 try {
-  $c = New-SelfSignedCertificate -Subject 'CN=html-FileNest Local' -DnsName 'localhost','127.0.0.1' ` +
+  $c = New-SelfSignedCertificate -Subject 'CN=${CERT_CN} Local' -DnsName 'localhost','127.0.0.1' ` +
     `-CertStoreLocation Cert:\\LocalMachine\\My -NotAfter (Get-Date).AddYears(10) ` +
     `-KeyExportPolicy Exportable -KeyLength 2048
   $p = ConvertTo-SecureString -String '${PFX_PASS}' -Force -AsPlainText
