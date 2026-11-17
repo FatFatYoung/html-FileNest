@@ -1249,9 +1249,10 @@ async function listDir(req, res, q, cfg) {
   // 并在服务端排好序再返回，页面拿到后按序流式加载；不再两阶段补齐（stat-batch）
   const sortKey = (q.sort || '').toLowerCase();      // name|size|mtime|type
   const sortAsc = q.asc !== '0';
-  const needStat = sortKey === 'size' || sortKey === 'mtime';   // 这两类排序依赖 stat 字段
-  // sort=size/mtime 时忽略 fast：源头有序优先，宁可全量 stat 也要顺序绝对正确
-  const fast = (q.fast === '1' || q.fast === 'true') && !needStat;
+  // fast 骨架无条件生效（2026-11-18 两阶段）：即使 sort=size/mtime 也先出骨架
+  // （元数据空、同值按名并列序），补齐请求全量 stat 后按用户排序整体替换——
+  // 首屏速度优先于骨架期的临时顺序（默认排序就是 mtime，忽略 fast 会让两阶段失效）
+  const fast = q.fast === '1' || q.fast === 'true';
   // UNC 主机根（\\host）不能用 readdir 列目录——Windows 共享枚举是另一套 API，
   // 用 net view 列出主机上的可见共享，以目录形式呈现（2026-11-13）
   if (isBareHost(dir)) {
