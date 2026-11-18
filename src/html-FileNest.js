@@ -2710,10 +2710,17 @@ function isLnkPath(p) {
 // 目标含环境变量则展开；解析失败/空目标返回 ''；URL 目标原样返回（由调用方识别）
 async function resolveShortcutTarget(lnkPath) {
   const esc = (s) => String(s).replace(/'/g, "''");
+  // WScript.Shell 读 TargetPath；URL 目标 WScript 读回为空 → Shell.Application GetLink 备援
+  const dir = path.win32.dirname(lnkPath);
+  const base = path.win32.basename(lnkPath);
   const script = "$ErrorActionPreference='Stop'\n"
     + "$w=New-Object -ComObject WScript.Shell\n"
     + "$sc=$w.CreateShortcut('" + esc(lnkPath) + "')\n"
-    + "Write-Output ([Environment]::ExpandEnvironmentStrings($sc.TargetPath))";
+    + "$t=$sc.TargetPath\n"
+    + "if(-not $t){ try { $sh=New-Object -ComObject Shell.Application\n"
+    + "  $t=$sh.Namespace('" + esc(dir) + "').ParseName('" + esc(base) + "').GetLink().Target.Path } catch { $t='' } }\n"
+    + "if($t -match '^[a-z]:[\\\\/]' -or $t -like '\\\\*'){ $t=[Environment]::ExpandEnvironmentVariables($t) }\n"
+    + "Write-Output $t";
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
     { stdout: 'pipe', stderr: 'ignore' });
@@ -2751,28 +2758,30 @@ async function shortcutInfoOp(res, q, cfg) {
   return sendJson(res, 200, { ok: true, kind: plan.kind, target: plan.target });
 }
 
-// 快捷方式图标：继承目标在资源管理器显示的图标（ExtractAssociatedIcon 目标 → PNG 32px），
-// 存 cacheDir/thumbs（键含 lnk 的 mtime+size+目标）；目标失效回 404 前端保留默认图标
+// 快捷方式图标：继承目标在资源管理器显示的原图标（SHGetFileInfo 解析 .lnk 取目标图标 →
+// PNG 32px；文件夹/URL/失效目标全兼容），存 cacheDir/thumbs；失败回 404 前端保留默认图标
 async function shortcutIconOp(res, lnkPath, cfg) {
   const st = await fs.promises.stat(lnkPath).catch(() => null);
   if (!st || !st.isFile()) return sendJson(res, 404, { ok: false, error: 'not found' });
   const tdir = path.join(cfg.cacheDir, 'thumbs');
   if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
-  const target = await resolveShortcutTarget(lnkPath).catch(() => '');
   const key = crypto.createHash('sha1')
-    .update('lnk|' + lnkPath + '|' + st.mtimeMs + '|' + st.size + '|' + target).digest('hex').slice(0, 20);
+    .update('lnkico|' + lnkPath + '|' + st.mtimeMs + '|' + st.size).digest('hex').slice(0, 20);
   const outFile = path.join(tdir, key + '.png');
   if (fs.existsSync(outFile)) return sendImageFile(res, outFile, 'image/png');
-  if (!target) return sendJson(res, 404, { ok: false, error: 'shortcut target not found' });
-  // URL 快捷方式取 lnk 自身图标（系统给的浏览器类图标）；本地目标取目标图标
-  const isUrl = /^[a-z][a-z0-9+.-]*:/i.test(target) && !/^[a-z]:[\\\/]/i.test(target);
   const esc = (s) => String(s).replace(/'/g, "''");
   const script = "$ErrorActionPreference='Stop'\n"
     + "Add-Type -AssemblyName System.Drawing\n"
-    + "$ico=[System.Drawing.Icon]::ExtractAssociatedIcon('" + esc(isUrl ? lnkPath : target) + "')\n"
+    + "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class ShellIco{[StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]public struct SHFILEINFO{public IntPtr hIcon;public int iIcon;public uint dwAttributes;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)]public string szDisplayName;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=80)]public string szTypeName;}[DllImport(\"shell32.dll\",CharSet=CharSet.Unicode)]public static extern IntPtr SHGetFileInfo(string pszPath,uint dwFileAttributes,ref SHFILEINFO psfi,uint cbFileInfo,uint uFlags);[DllImport(\"user32.dll\")]public static extern bool DestroyIcon(IntPtr h);}'\n"
+    + "$sfi=New-Object ShellIco+SHFILEINFO\n"
+    + "$sz=[uint32][System.Runtime.InteropServices.Marshal]::SizeOf($sfi)\n"
+    + "$ptr=[ShellIco]::SHGetFileInfo('" + esc(lnkPath) + "',[uint32]0,[ref]$sfi,$sz,[uint32]0x100)\n"
+    + "if($ptr -eq [IntPtr]::Zero -or $sfi.hIcon -eq [IntPtr]::Zero){ throw 'no icon' }\n"
+    + "$ico=[System.Drawing.Icon]::FromHandle($sfi.hIcon)\n"
     + "$bmp=$ico.ToBitmap()\n"
-    + "$bmp.Save('" + esc(outFile) + "', [System.Drawing.Imaging.ImageFormat]::Png)\n"
-    + "$bmp.Dispose()\n$ico.Dispose()";
+    + "$bmp.Save('" + esc(outFile) + "',[System.Drawing.Imaging.ImageFormat]::Png)\n"
+    + "$bmp.Dispose()\n"
+    + "[ShellIco]::DestroyIcon($sfi.hIcon) | Out-Null";
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
     { stdout: 'ignore', stderr: 'ignore' });
