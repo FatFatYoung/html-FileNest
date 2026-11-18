@@ -694,7 +694,7 @@ body {
       zip:'📦', rar:'📦', '7z':'📦', tar:'📦', gz:'📦',
       exe:'⚙️', msi:'⚙️', dll:'⚙️', bat:'⚙️', cmd:'⚙️', ps1:'⚙️',
       py:'🐍', rb:'💎', go:'🔷', rs:'⚙️', java:'☕', c:'📘', h:'📘', cpp:'📘', hpp:'📘',
-      db:'🗃️', sqlite:'🗃️', sql:'🗃️', log:'📋', csv:'📊'
+      db:'🗃️', sqlite:'🗃️', sql:'🗃️', log:'📋', csv:'📊', lnk:'🔗'
     };
     return m[e] || '📄';
   }
@@ -703,7 +703,7 @@ body {
   // 只加载"视线所在范围"（与列表视口相交的行）的缩略图；视线一动（滚动/resize/导航）
   // 立即终止在途+清队列，停住 200ms 后只加载新视口内的。每张就绪立刻只换这一行的图标。
   // 并发 3，提不出缩略图保留原图标不重试；导航代际变了在途结果全部丢弃。
-  var THUMB_EXTS = ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'ico', 'webp', 'avif', 'apng', 'heic', 'heif', 'psd', 'psb', 'ai'];
+  var THUMB_EXTS = ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'ico', 'webp', 'avif', 'apng', 'heic', 'heif', 'psd', 'psb', 'ai', 'lnk'];
   var thumbQ = [], thumbActive = 0;
   var THUMB_INFLIGHT = [];   // 在途 Image 引用：视线移动/导航时主动取消下载
   var THUMB_CONC = 3;
@@ -1922,10 +1922,20 @@ body {
     if (item.type === 'dir') {
       // 目录双击：进入目录（ZIP 虚拟目录走 navTo 的 :: 分支）
       navTo({ path: item.path, source: state.current.source });
-    } else {
-      // 文件双击：系统默认程序打开（ZIP 内文件走 openWithSystem 自动提取）
-      openWithSystem(item);
+      return;
     }
+    // 快捷方式追溯（2026-11-18）：文件夹目标→进该目录；文件目标→服务端按目标类型系统打开
+    if (normExt(item.ext) === 'lnk') {
+      apiGet('/api/shortcut-info?path=' + enc(item.path))
+        .then(function (d) {
+          if (d && d.kind === 'dir') navTo({ path: d.target, source: state.current.source });
+          else openWithSystem(item);
+        })
+        .catch(function (e) { showToast(tr('打开失败: ') + e.message, 'error'); });
+      return;
+    }
+    // 文件双击：系统默认程序打开（ZIP 内文件走 openWithSystem 自动提取）
+    openWithSystem(item);
   }
   // 用系统默认程序打开文件（后端 /open，内部走 explorer.exe，失败降级 rundll32）
   function openWithSystem(item) {
