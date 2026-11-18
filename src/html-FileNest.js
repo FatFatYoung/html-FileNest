@@ -680,6 +680,7 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/read')   return await readTextFile(res, q, cfg);
       if (p === '/api/office-preview') return await officePreview(res, q, cfg);
       if (p === '/api/thumb') return await thumbFile(res, q, cfg);
+      if (p === '/api/shortcut-info') return await shortcutInfoOp(res, q, cfg);
       if (p === '/api/archive-list') return await archiveList(res, q, cfg);
       if (p === '/api/archive-extract') return await archiveExtract(req, res, q, cfg);
       return sendJson(res, 404, { ok: false, error: 'not found' });
@@ -2287,6 +2288,8 @@ function sendImageFile(res, file, mime) {
 
 async function thumbFile(res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg, {});
+  // 快捷方式图标分支（2026-11-18）：.lnk 在扩展黑名单，走独立图标提取（继承目标原图标）
+  if (isLnkPath(file)) return await shortcutIconOp(res, file, cfg);
   const chk = checkExtension(file, cfg);
   if (!chk.ok) return sendJson(res, 403, { ok: false, error: chk.reason });
   const st = await fs.promises.stat(file);
@@ -2696,6 +2699,86 @@ async function createShortcutLnk(fullPath, target) {
     { stdout: 'ignore', stderr: 'ignore' });
   await proc.exited;
   if (!fs.existsSync(fullPath)) throw new Error('shortcut create failed');
+}
+
+// —— 快捷方式追溯（2026-11-18）：.lnk 不再一刀切拒绝，解析真实目标按目标类型/策略处理 —— //
+function isLnkPath(p) {
+  return path.win32.extname(String(p || '').replace(/[. ]+$/, '')).toLowerCase() === '.lnk';
+}
+
+// WScript.Shell COM 解析 .lnk 目标（与 createShortcutLnk 同款 -EncodedCommand 零注入）；
+// 目标含环境变量则展开；解析失败/空目标返回 ''；URL 目标原样返回（由调用方识别）
+async function resolveShortcutTarget(lnkPath) {
+  const esc = (s) => String(s).replace(/'/g, "''");
+  const script = "$ErrorActionPreference='Stop'\n"
+    + "$w=New-Object -ComObject WScript.Shell\n"
+    + "$sc=$w.CreateShortcut('" + esc(lnkPath) + "')\n"
+    + "Write-Output ([Environment]::ExpandEnvironmentStrings($sc.TargetPath))";
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+    { stdout: 'pipe', stderr: 'ignore' });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  return out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
+}
+
+// 快捷方式打开计划：解析目标 → 过安全边界（roots+路径黑名单+扩展名黑名单按目标判定）→
+// 返回 { kind:'dir'|'file'|'url', target }；不通过/目标失效抛 Error（原因即拦截理由）。
+// 目标在黑名单（路径或扩展名）→ 拦截，杜绝用 .lnk 绕过黑名单；lnk 链目标仍是 .lnk →
+// 命中扩展名黑名单拒绝（不做链式递归，防环）。
+async function shortcutOpenPlan(lnkPath, cfg) {
+  const target = await resolveShortcutTarget(lnkPath);
+  if (!target) throw new Error('shortcut target not found');
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target) && !/^[a-z]:[\\\/]/i.test(target)) {
+    return { kind: 'url', target };   // URL 目标（http/https/mailto 等）→ 系统默认处理
+  }
+  const abs = resolveAllowedPath(target, cfg);   // roots + 黑名单 + 符号链接真实路径
+  let st;
+  try { st = await fs.promises.stat(abs); } catch (e) { throw new Error('shortcut target not found'); }
+  if (st.isDirectory()) return { kind: 'dir', target: abs };
+  const extCheck = checkExtension(abs, cfg);
+  if (!extCheck.ok) throw new Error(extCheck.reason);   // 目标扩展名在黑名单（如 .exe）→ 拦截
+  return { kind: 'file', target: abs };
+}
+
+// 快捷方式信息（UI 双击 .lnk 前问询）：文件夹目标→前端进目录，文件目标→前端走 /open
+async function shortcutInfoOp(res, q, cfg) {
+  const file = resolveAllowedPath(q.path, cfg, {});
+  if (!isLnkPath(file)) return sendJson(res, 400, { ok: false, error: 'not a shortcut' });
+  let plan;
+  try { plan = await shortcutOpenPlan(file, cfg); }
+  catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
+  return sendJson(res, 200, { ok: true, kind: plan.kind, target: plan.target });
+}
+
+// 快捷方式图标：继承目标在资源管理器显示的图标（ExtractAssociatedIcon 目标 → PNG 32px），
+// 存 cacheDir/thumbs（键含 lnk 的 mtime+size+目标）；目标失效回 404 前端保留默认图标
+async function shortcutIconOp(res, lnkPath, cfg) {
+  const st = await fs.promises.stat(lnkPath).catch(() => null);
+  if (!st || !st.isFile()) return sendJson(res, 404, { ok: false, error: 'not found' });
+  const tdir = path.join(cfg.cacheDir, 'thumbs');
+  if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
+  const target = await resolveShortcutTarget(lnkPath).catch(() => '');
+  const key = crypto.createHash('sha1')
+    .update('lnk|' + lnkPath + '|' + st.mtimeMs + '|' + st.size + '|' + target).digest('hex').slice(0, 20);
+  const outFile = path.join(tdir, key + '.png');
+  if (fs.existsSync(outFile)) return sendImageFile(res, outFile, 'image/png');
+  if (!target) return sendJson(res, 404, { ok: false, error: 'shortcut target not found' });
+  // URL 快捷方式取 lnk 自身图标（系统给的浏览器类图标）；本地目标取目标图标
+  const isUrl = /^[a-z][a-z0-9+.-]*:/i.test(target) && !/^[a-z]:[\\\/]/i.test(target);
+  const esc = (s) => String(s).replace(/'/g, "''");
+  const script = "$ErrorActionPreference='Stop'\n"
+    + "Add-Type -AssemblyName System.Drawing\n"
+    + "$ico=[System.Drawing.Icon]::ExtractAssociatedIcon('" + esc(isUrl ? lnkPath : target) + "')\n"
+    + "$bmp=$ico.ToBitmap()\n"
+    + "$bmp.Save('" + esc(outFile) + "', [System.Drawing.Imaging.ImageFormat]::Png)\n"
+    + "$bmp.Dispose()\n$ico.Dispose()";
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+    { stdout: 'ignore', stderr: 'ignore' });
+  await proc.exited;
+  if (fs.existsSync(outFile)) return sendImageFile(res, outFile, 'image/png');
+  return sendJson(res, 404, { ok: false, error: 'no icon' });
 }
 
 // —— Windows 右键"新建"菜单的文件类型（注册表 ShellNew，与桌面右键菜单同源） ——
@@ -3407,6 +3490,17 @@ function hasUnsafeName(p) {
 }
 
 async function openOp(res, data, cfg) {
+  // 快捷方式追溯（2026-11-18）：.lnk 解析真实目标按目标类型/策略打开（黑名单照常拦截）
+  if (isLnkPath(data.path) && String(data.path || '').indexOf('::') < 0) {
+    let plan;
+    try { plan = await shortcutOpenPlan(data.path, cfg); }
+    catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
+    if (plan.kind === 'url') {
+      openWithSystem(plan.target);
+      return sendJson(res, 200, { ok: true, path: data.path, target: plan.target, shortcut: true });
+    }
+    data = Object.assign({}, data, { path: plan.target });
+  }
   const extCheck = checkExtension(data.path || '', cfg);
   if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   if (hasUnsafeName(data.path || '')) return sendJson(res, 400, { ok: false, error: 'invalid characters in path' });
@@ -3487,7 +3581,9 @@ async function handleFileOp(op, q, res, cfg) {
   catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
   if (!target) return sendJson(res, 403, { ok: false, error: 'path not allowed' });
 
-  const extCheck = checkExtension(target.displayPath || target.localPath || '', cfg);
+  // 快捷方式追溯（2026-11-18）：/open 对 .lnk 解析真实目标按目标策略处理，不再一刀切
+  const lnkOpen = op === '/open' && isLnkPath(target.displayPath || target.localPath || '');
+  const extCheck = lnkOpen ? { ok: true } : checkExtension(target.displayPath || target.localPath || '', cfg);
   if (!extCheck.ok) {
     return sendJson(res, 403, { ok: false, error: extCheck.reason });
   }
@@ -3499,6 +3595,12 @@ async function handleFileOp(op, q, res, cfg) {
   if (op === '/exists') return sendJson(res, 200, { ok: true, exists: true, path: target.displayPath });
 
   if (op === '/open') {
+    if (lnkOpen) {
+      let plan;
+      try { plan = await shortcutOpenPlan(localPath, cfg); }
+      catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
+      localPath = plan.target;
+    }
     let replied = false;
     const reply = (data) => {
       if (replied) return;
