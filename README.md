@@ -311,7 +311,7 @@ html-FileNest/
 
 ## Changelog
 
-**v2.2.0.1 (Latest)**
+**v2.2.1.0 (Latest)**
 
   **New features**
   - **Instant folder opening on slow storage (two-phase loading)**: a folder now opens immediately showing names and icons while file sizes and modification times stream in right behind them — a 10 000-entry folder on a slow NAS opens in about a second instead of 20+ seconds. Directories already covered by the SQLite index still open instantly with full details.
