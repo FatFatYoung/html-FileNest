@@ -115,6 +115,12 @@ All API endpoints are protected by a webpage allowlist: the app's own UI origin 
 | GET | `/reveal?path=<abs>` | Reveal file in Explorer |
 | GET | `/open-folder?path=<abs>` | Open containing folder in Explorer |
 
+### Cache
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/cache/clear` | Clear the server-side cache (thumbnails, extracted previews) |
+
 ### File Manager API
 
 | Method | Endpoint | Description |
@@ -129,7 +135,8 @@ All API endpoints are protected by a webpage allowlist: the app's own UI origin 
 | GET | `/api/raw?path=<abs>&download=1` | Download file as attachment |
 | GET | `/api/read?path=<abs>` | Read text file content (max 5 MB) |
 | GET | `/api/office-preview?path=<abs>` | Office/Design preview (doc/docx/xls/xlsx/ppt/pptx/psd/psb/ai) |
-| GET | `/api/thumb?path=<abs>` | Low-res thumbnail (64px-edge JPEG) for images/PSD/PSB/AI; SVG passthrough; 404 when none |
+| GET | `/api/thumb?path=<abs>` | Low-res thumbnail (64px-edge JPEG) for images/PSD/PSB/AI; SVG passthrough; `.lnk` shortcuts serve the target's Explorer icon (PNG 32px); 404 when none |
+| GET | `/api/shortcut-info?path=<abs>` | Resolve a `.lnk` shortcut's real target (`kind`: dir/file/url); roots/path-blacklist/extension policy applies to the target |
 | GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List archive contents (ZIP/JAR/TAR/GZ/TGZ/RAR/7Z, virtual directory) |
 | GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from archive (multi-format) |
 | POST | `/api/mkdir` | Create folder `{path, name}` |
@@ -172,8 +179,9 @@ Edit `C:\html-FileNest\config.json`:
   "allowedExtensions": [],
   "blockExecutables": true,
   "blockedExtensions": [
-    ".exe", ".bat", ".cmd", ".com", ".scr", ".ps1",
-    ".vbs", ".js", ".msi", ".dll", ".reg", ".lnk"
+    ".exe", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".vbe",
+    ".js", ".jse", ".wsf", ".wsh", ".msi", ".cpl", ".hta", ".pif",
+    ".reg", ".inf", ".lnk", ".url", ".dll"
   ],
   "cacheDir": "C:\\html-FileNest\\cache",
   "cacheMaxAgeHours": 24,
@@ -199,7 +207,7 @@ Edit `C:\html-FileNest\config.json`:
 | `blockExecutables` | Reject executable files (default: true) |
 | `security.allowedOrigins` | Webpage allowlist for API callers. The app's own UI origin (localhost/127.0.0.1 on the configured ports; defaults 20000/20443; same-origin calls with matching `Host` included) is always allowed and not subject to the list; entries are full origins (`http://192.168.1.10`: exact scheme+host+port) or bare domains (`192.168.1.10`: exact hostname, any scheme/port); exact match only - no wildcards, no subdomain inheritance (`b.a.com` needs its own entry); empty list (default) rejects every other site; `Origin: null` is always rejected |
 | `security.requireLocalOrigin` | Only accept requests from localhost (default: true) |
-| `security.authToken` | Optional auth token for API access |
+| `security.authToken` | Optional auth token checked on `/api/*` requests via the `x-auth-token` header. The non-`/api` routes (`/ping`, `/open`, `/exists`, `/reveal`, `/open-folder`, `/cache/clear`) do not check it - they are restricted to localhost instead |
 
 ### Environment Variables
 
@@ -373,7 +381,7 @@ html-FileNest/
 **Fixes** (security)
 - Upload names `.` / `..` are now rejected — `POST /api/upload` with `name=..` wrote the file into the *parent* directory of the target folder (CWE-22), letting a crafted upload escape the selected folder.
 - The extension policy now covers every write path: upload, rename, move, copy, save and new-file creation all reject blocked executable extensions, including trailing-dot/space name variants such as `evil.exe.` / `evil.exe ` (Windows silently rewrites them to `evil.exe`). Previously any of these paths could plant an executable the policy was meant to block.
-- The Host/Origin security gate now also protects the legacy routes (`/ping`, `/open`, `/exists`, `/reveal`, `/open-folder`, `/cache/clear`) and `/api/*`: a forged `Host: evil.example` or a cross-site `Origin` receives 403 instead of a served response with a reflected `Access-Control-Allow-Origin`. Requests carrying neither header (curl, local scripts) are unaffected.
+- The Host/Origin security gate now also protects the six non-`/api` routes (`/ping`, `/open`, `/exists`, `/reveal`, `/open-folder`, `/cache/clear`) and `/api/*`: a forged `Host: evil.example` or a cross-site `Origin` receives 403 instead of a served response with a reflected `Access-Control-Allow-Origin`. Requests carrying neither header (curl, local scripts) are unaffected.
 
 Security fixes contributed by [@sucloudflare](https://github.com/sucloudflare) via [#1](https://github.com/FatFatYoung/html-FileNest/pull/1) — thanks!
 
