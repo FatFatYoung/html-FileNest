@@ -136,7 +136,7 @@ All API endpoints are protected by a webpage allowlist: the app's own UI origin 
 | GET | `/api/read?path=<abs>` | Read text file content (max 5 MB) |
 | GET | `/api/office-preview?path=<abs>` | Office/Design preview (doc/docx/xls/xlsx/ppt/pptx/psd/psb/ai) |
 | GET | `/api/thumb?path=<abs>` | Low-res thumbnail (64px-edge JPEG) for images/PSD/PSB/AI; SVG passthrough; `.lnk` shortcuts serve the target's Explorer icon (PNG 32px); 404 when none |
-| GET | `/api/shortcut-info?path=<abs>` | Resolve a `.lnk` shortcut's real target (`kind`: dir/file/url/native). `native` = network computer/share-root targets (e.g. `\\server`) that cannot be stat-checked — open is delegated to the system (Explorer), matching Windows double-click behavior. Roots/path-blacklist/extension policy applies to the target. If `.lnk` is listed in `blockedExtensions`, shortcuts are fully banned (open/preview/icon/create all reject) |
+| GET | `/api/shortcut-info?path=<abs>` | Resolve a `.lnk` shortcut's real target (`kind`: dir/file/url). Directory and network-location targets (`\\server` host roots, `\\server\share` share roots) return `dir` — the manager navigates into them in place (host roots list their shares), matching the home page network-drive entry; file targets open by type. Roots/path-blacklist/extension policy applies to the target. If `.lnk` is listed in `blockedExtensions`, shortcuts are fully banned (open/preview/icon/create all reject) |
 | GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List archive contents (ZIP/JAR/TAR/GZ/TGZ/RAR/7Z, virtual directory) |
 | GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from archive (multi-format) |
 | POST | `/api/mkdir` | Create folder `{path, name}` |
@@ -149,6 +149,7 @@ All API endpoints are protected by a webpage allowlist: the app's own UI origin 
 | POST | `/api/rm` | Move to recycle bin `{path, recursive?}` (truly deletes only with `purge: true`) |
 | GET | `/api/recycle` | List recycle-bin items (original path, deletion time) |
 | POST | `/api/recycle-restore` | Restore a recycled item `{id}` (name collisions get a " (restored)" suffix) |
+| POST | `/api/recycle-restore-all` | Restore every recycled item at once `{}` |
 | POST | `/api/recycle-purge` | Permanently delete one recycled item `{id}` |
 | POST | `/api/recycle-empty` | Permanently delete everything in the recycle bin |
 | GET | `/api/search?path=<abs>&q=<text>` | Recursive file/folder name search under `path` (cap 500 hits) |
@@ -210,6 +211,12 @@ Edit `C:\html-FileNest\config.json`:
 | `security.authToken` | Optional auth token checked on `/api/*` requests via the `x-auth-token` header. The non-`/api` routes (`/ping`, `/open`, `/exists`, `/reveal`, `/open-folder`, `/cache/clear`) do not check it - they are restricted to localhost instead |
 
 ### Environment Variables
+
+Service-level environment variable:
+
+| Variable | Description |
+|----------|-------------|
+| `FIN_INSTALL_DIR` | Overrides the product install directory (default `C:\html-FileNest`). The active install directory is always kept in the path blacklist; this variable exists mainly for sandboxed testing |
 
 Config values support `${VAR}` syntax for dynamic expansion:
 
@@ -280,6 +287,7 @@ html-FileNest/
 ├── package.json            # Dependency manifest
 ├── bun.lock                # Dependency lock file
 ├── README.md
+├── THIRD-PARTY-NOTICES.txt
 ├── LICENSE
 └── .gitignore
 ```
@@ -308,9 +316,11 @@ html-FileNest/
   **New features**
   - **Instant folder opening on slow storage (two-phase loading)**: a folder now opens immediately showing names and icons while file sizes and modification times stream in right behind them — a 10 000-entry folder on a slow NAS opens in about a second instead of 20+ seconds. Directories already covered by the SQLite index still open instantly with full details.
   - **Clean upgrade, nothing lost**: running a newer installer now removes the previous version automatically (running service, scheduled task, program files) and installs fresh — everything that belongs to the user is inherited untouched: `config.json`, favorites, the recycle bin, the HTTPS certificate (no browser re-trust after upgrading), and the `file-index.db` SQLite index (carried over, never rebuilt).
+  - **Shortcut (`.lnk`) tracing**: double-clicking a shortcut opens its real target — folders enter the manager, files open by type, URLs jump in the browser. Chained shortcuts resolve hop by hop (up to 4 hops). Full target policy applies (roots, path blacklist, extension blacklist), so a shortcut can never bypass a blacklist; when `.lnk` is listed in `blockedExtensions` shortcuts are fully banned instead. Shortcut icons inherit the icon Explorer shows (`SHGetFileInfo`), and the preview pane shows a shortcut info card (`GET /api/shortcut-info`) instead of the old raw error.
 
   **Improvements**
   - Double-clicking the installer while the service is running now upgrades in place instead of showing "already running".
+  - Shortcut targets on the network (`\\server` host roots, `\\server\share` share roots) navigate into the manager in place — server roots list their shares — instead of launching a system window that never appears (double-click used to look like "nothing happened").
 
 **v2.2.0.0**
 
