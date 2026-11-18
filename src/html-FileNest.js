@@ -2356,7 +2356,7 @@ function sendImageFile(res, file, mime) {
 async function thumbFile(res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg, {});
   // 快捷方式图标分支（2026-11-18）：.lnk 不在黑名单时继承目标原图标；在黑名单 → 全面封禁走统一拦截
-  if (isLnkPath(file) && checkExtension(file, cfg).ok) return await shortcutIconOp(res, file, cfg);
+  if (isLnkPath(file)) return await shortcutIconOp(res, file, cfg);   // 封禁语义由其内部 selfCheck 统一给出
   const chk = checkExtension(file, cfg);
   if (!chk.ok) return sendJson(res, 403, { ok: false, error: chk.reason });
   const st = await fs.promises.stat(file);
@@ -2785,8 +2785,7 @@ function parseLnkCandidates(lnkPath) {
   const push = (s, rank) => {
     const t = String(s || '').trim().replace(/\//g, '\\');
     if (t.length < 4 || t.length > 520) return;
-    if (/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^[a-z]:[\\\/]/i.test(t)) return;   // URL 不取
-    if (!/^[\\/]{2}/.test(t) && !/^[a-z]:[\\\/]/i.test(t)) return;             // 只收 UNC/绝对盘符
+    if (!/^[\\/]{2}/.test(t) && !/^[a-z]:[\\\/]/i.test(t) && !/^[a-z][a-z0-9+.-]*:/i.test(t)) return;  // UNC/盘符/URL
     out.push({ t, rank });
   };
   try {
@@ -2808,6 +2807,7 @@ function parseLnkCandidates(lnkPath) {
       const b2 = String(base || '').trim();
       const s2 = String(suf || '').trim();
       if (!b2 || !s2 || s2 === '.') return b2;
+      if (/^[a-z]:[\\\/]/i.test(s2)) return s2;   // suffix 自身是完整路径（非规范 .lnk）→ 直接取
       return b2.replace(/[\\/]+$/, '') + '\\' + s2.replace(/^[\\/]+/, '');
     };
     let pos = 76;
@@ -2990,7 +2990,14 @@ async function shortcutOpenPlan(lnkPath, cfg) {
       if (st) { openPath = alt; break; }
     }
   }
-  if (!st) throw new Error('shortcut target not found: ' + abs + ' (stat failed)');
+  if (!st) {
+    // 网络计算机/共享根目标（2026-11-18）：\\server 或 \\server\share 这类服务器/共享根
+    // 无法用 fs.stat 存在性判断（Windows 里 WSD"网络设备"快捷方式目标就是服务器根，
+    // 资源管理器可正常打开）→ 交系统打开（与 Windows 双击行为一致），不报 not found。
+    const uncRoot = /^\\\\[^\\\/]+(\\[^\\\/]+)?$/.test(abs.replace(/\//g, '\\').replace(/\\+$/, ''));
+    if (uncRoot) return { kind: 'native', target: abs };
+    throw new Error('shortcut target not found: ' + abs + ' (stat failed)');
+  }
   if (st.isDirectory()) return { kind: 'dir', target: openPath };
   const extCheck = checkExtension(openPath, cfg);
   if (!extCheck.ok) throw new Error(extCheck.reason);   // 目标扩展名在黑名单（如 .exe）→ 拦截
@@ -3015,6 +3022,9 @@ async function shortcutInfoOp(res, q, cfg) {
 async function shortcutIconOp(res, lnkPath, cfg) {
   const st = await fs.promises.stat(lnkPath).catch(() => null);
   if (!st || !st.isFile()) return sendJson(res, 404, { ok: false, error: 'not found' });
+  // .lnk 在黑名单 → 全面封禁（图标与打开/预览/创建同步）
+  const selfCheck = checkExtension(lnkPath, cfg);
+  if (!selfCheck.ok) return sendJson(res, 403, { ok: false, error: selfCheck.reason });
   const tdir = path.join(cfg.cacheDir, 'thumbs');
   if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
   const key = crypto.createHash('sha1')
@@ -3760,7 +3770,7 @@ async function openOp(res, data, cfg) {
     let plan;
     try { plan = await shortcutOpenPlan(data.path, cfg); }
     catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
-    if (plan.kind === 'url') {
+    if (plan.kind === 'url' || plan.kind === 'native') {
       openWithSystem(plan.target);
       return sendJson(res, 200, { ok: true, path: data.path, target: plan.target, shortcut: true });
     }
@@ -3789,7 +3799,7 @@ async function openOp(res, data, cfg) {
       let plan;
       try { plan = await shortcutOpenPlan(tmpFile, cfg); }
       catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
-      if (plan.kind === 'url') {
+      if (plan.kind === 'url' || plan.kind === 'native') {
         openWithSystem(plan.target);
         return sendJson(res, 200, { ok: true, path: data.path, target: plan.target, shortcut: true, extracted: true });
       }
@@ -3958,7 +3968,9 @@ function wildcardToRegex(pattern) {
 }
 
 function matchAnyRoot(absPath, roots) {
-  const norm = path.win32.normalize(absPath);
+  // normalizeAbs 而非 path.win32.normalize：后者会把 UNC 主机根 \\host 吞成 \host（2026-11-18 修）
+  let norm;
+  try { norm = normalizeAbs(absPath); } catch (e) { return false; }
   const nl = norm.toLowerCase();
   for (const r of roots) {
     if (!r) continue;
