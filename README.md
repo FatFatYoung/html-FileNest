@@ -319,8 +319,12 @@ html-FileNest/
   - **Shortcut (`.lnk`) tracing**: double-clicking a shortcut opens its real target — folders enter the manager, files open by type, URLs jump in the browser. Chained shortcuts resolve hop by hop (up to 4 hops). Full target policy applies (roots, path blacklist, extension blacklist), so a shortcut can never bypass a blacklist; when `.lnk` is listed in `blockedExtensions` shortcuts are fully banned instead. Shortcut icons inherit the icon Explorer shows (`SHGetFileInfo`), and the preview pane shows a shortcut info card (`GET /api/shortcut-info`) instead of the old raw error.
 
   **Improvements**
+  - **Grid view: icons twice the size**: grid icons are now 64px (was 32px) with taller rows (128px), so long file names wrap to two lines comfortably.
   - Double-clicking the installer while the service is running now upgrades in place instead of showing "already running".
   - Shortcut targets on the network (`\\server` host roots, `\\server\share` share roots) navigate into the manager in place — server roots list their shares — instead of launching a system window that never appears (double-click used to look like "nothing happened").
+
+  **Fixes**
+  - Default listing order is newest-first by modification time; the fast two-phase loading skeleton now engages in every sort mode.
 
 **v2.2.0.0**
 
