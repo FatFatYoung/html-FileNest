@@ -63,7 +63,7 @@ const DEFAULT_CONFIG = {
   blockedExtensions: [
     '.exe', '.bat', '.cmd', '.com', '.scr', '.ps1', '.vbs', '.vbe',
     '.js', '.jse', '.wsf', '.wsh', '.msi', '.cpl', '.hta', '.pif',
-    '.reg', '.inf', '.lnk', '.url', '.dll'
+    '.reg', '.inf', '.url', '.dll'
   ],
   cacheDir: 'C:\\html-FileNest\\cache',
   cacheMaxAgeHours: 24,
@@ -2288,8 +2288,8 @@ function sendImageFile(res, file, mime) {
 
 async function thumbFile(res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg, {});
-  // 快捷方式图标分支（2026-11-18）：.lnk 在扩展黑名单，走独立图标提取（继承目标原图标）
-  if (isLnkPath(file)) return await shortcutIconOp(res, file, cfg);
+  // 快捷方式图标分支（2026-11-18）：.lnk 不在黑名单时继承目标原图标；在黑名单 → 全面封禁走统一拦截
+  if (isLnkPath(file) && checkExtension(file, cfg).ok) return await shortcutIconOp(res, file, cfg);
   const chk = checkExtension(file, cfg);
   if (!chk.ok) return sendJson(res, 403, { ok: false, error: chk.reason });
   const st = await fs.promises.stat(file);
@@ -2612,7 +2612,10 @@ async function mkfileOp(res, data, cfg) {
     throw new Error('invalid file name');
   }
   const full = resolveAllowedPath(path.win32.join(dir, name), cfg);
-  // —— 新建菜单"快捷方式"专用流：仅允许 .lnk 且带用户指定目标（其余 .lnk 写路径仍被扩展名策略拦截） ——
+  // 扩展名黑名单前置（2026-11-18 定正）：.lnk 在黑名单 → 新建快捷方式同样封禁，跟随配置放行/封禁
+  const extCheck = checkExtension(full, cfg);
+  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
+  // —— 新建菜单"快捷方式"专用流：仅允许 .lnk 且带用户指定目标 ——
   const shortcutTarget = data.shortcutTarget ? String(data.shortcutTarget).trim() : '';
   if (shortcutTarget) {
     if (path.win32.extname(name).toLowerCase() !== '.lnk') return sendJson(res, 400, { ok: false, error: 'shortcut must be .lnk' });
@@ -2622,8 +2625,6 @@ async function mkfileOp(res, data, cfg) {
     indexWrite(full);   // 库同步
     return sendJson(res, 200, { ok: true, path: full });
   }
-  const extCheck = checkExtension(full, cfg);
-  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
   // —— 与 Windows 同源：按 ShellNew 注册的创建方式生成新文件（模板拷贝/初始数据/创建命令/空文件），绝不覆盖已存在文件 ——
   const types = await getNewFileTypes();
   const ext = path.win32.extname(name).toLowerCase();
@@ -2734,8 +2735,12 @@ async function resolveShortcutTarget(lnkPath) {
 // 目标在黑名单（路径或扩展名）→ 拦截，杜绝用 .lnk 绕过黑名单；lnk 链目标仍是 .lnk →
 // 命中扩展名黑名单拒绝（不做链式递归，防环）。
 async function shortcutOpenPlan(lnkPath, cfg) {
-  const target = await resolveShortcutTarget(lnkPath);
-  if (!target) throw new Error('shortcut target not found');
+  let target = await resolveShortcutTarget(lnkPath);
+  // 链式快捷方式（.lnk→.lnk）逐级溯源到最终目标（上限 4 级防环）
+  for (let hop = 0; hop < 4 && target && isLnkPath(target); hop++) {
+    target = await resolveShortcutTarget(resolveAllowedPath(target, cfg));
+  }
+  if (!target || isLnkPath(target)) throw new Error('shortcut target not found');
   if (/^[a-z][a-z0-9+.-]*:/i.test(target) && !/^[a-z]:[\\\/]/i.test(target)) {
     return { kind: 'url', target };   // URL 目标（http/https/mailto 等）→ 系统默认处理
   }
@@ -2752,6 +2757,9 @@ async function shortcutOpenPlan(lnkPath, cfg) {
 async function shortcutInfoOp(res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg, {});
   if (!isLnkPath(file)) return sendJson(res, 400, { ok: false, error: 'not a shortcut' });
+  // .lnk 在黑名单 → 全面封禁（与打开/图标/创建同步）
+  const selfCheck = checkExtension(file, cfg);
+  if (!selfCheck.ok) return sendJson(res, 403, { ok: false, error: selfCheck.reason });
   let plan;
   try { plan = await shortcutOpenPlan(file, cfg); }
   catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
@@ -3499,7 +3507,11 @@ function hasUnsafeName(p) {
 }
 
 async function openOp(res, data, cfg) {
-  // 快捷方式追溯（2026-11-18）：.lnk 解析真实目标按目标类型/策略打开（黑名单照常拦截）
+  // 扩展名黑名单统一前置（2026-11-18 定正）：.lnk 在黑名单 → 全面封禁；不在 → 走下方追溯
+  const extCheck = checkExtension(data.path || '', cfg);
+  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
+  if (hasUnsafeName(data.path || '')) return sendJson(res, 400, { ok: false, error: 'invalid characters in path' });
+  // 快捷方式追溯：.lnk 不在黑名单时解析真实目标按目标类型/策略打开（目标照常过黑名单）
   if (isLnkPath(data.path) && String(data.path || '').indexOf('::') < 0) {
     let plan;
     try { plan = await shortcutOpenPlan(data.path, cfg); }
@@ -3510,9 +3522,6 @@ async function openOp(res, data, cfg) {
     }
     data = Object.assign({}, data, { path: plan.target });
   }
-  const extCheck = checkExtension(data.path || '', cfg);
-  if (!extCheck.ok) return sendJson(res, 403, { ok: false, error: extCheck.reason });
-  if (hasUnsafeName(data.path || '')) return sendJson(res, 400, { ok: false, error: 'invalid characters in path' });
   // 压缩包虚拟路径（path.ext::entry）→ 提取到临时文件后打开
   const zipSep = (data.path || '').indexOf('::');
   if (zipSep > 0) {
@@ -3530,7 +3539,19 @@ async function openOp(res, data, cfg) {
     const base = path.basename(entry);
     const tmpFile = path.join(tmpDir, Date.now() + '_' + base);
     await fs.promises.writeFile(tmpFile, content);
-    openWithSystem(tmpFile);
+    // 压缩包内 .lnk 同样追溯（2026-11-18）：杜绝 zip 快捷方式绕过目标黑名单
+    let openTmp = tmpFile;
+    if (isLnkPath(entry)) {
+      let plan;
+      try { plan = await shortcutOpenPlan(tmpFile, cfg); }
+      catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
+      if (plan.kind === 'url') {
+        openWithSystem(plan.target);
+        return sendJson(res, 200, { ok: true, path: data.path, target: plan.target, shortcut: true, extracted: true });
+      }
+      openTmp = plan.target;
+    }
+    openWithSystem(openTmp);
     // 打开副本延迟清理（#12）：1h 后尝试删除，被查看器占用则退避重试，24h 清扫兜底
     const tryDelete = (attempt) => {
       setTimeout(() => {
@@ -3590,9 +3611,8 @@ async function handleFileOp(op, q, res, cfg) {
   catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
   if (!target) return sendJson(res, 403, { ok: false, error: 'path not allowed' });
 
-  // 快捷方式追溯（2026-11-18）：/open 对 .lnk 解析真实目标按目标策略处理，不再一刀切
-  const lnkOpen = op === '/open' && isLnkPath(target.displayPath || target.localPath || '');
-  const extCheck = lnkOpen ? { ok: true } : checkExtension(target.displayPath || target.localPath || '', cfg);
+  // 扩展名黑名单统一前置（2026-11-18 定正）：.lnk 在黑名单 → 全面封禁；不在 → /open 走追溯
+  const extCheck = checkExtension(target.displayPath || target.localPath || '', cfg);
   if (!extCheck.ok) {
     return sendJson(res, 403, { ok: false, error: extCheck.reason });
   }
@@ -3604,7 +3624,8 @@ async function handleFileOp(op, q, res, cfg) {
   if (op === '/exists') return sendJson(res, 200, { ok: true, exists: true, path: target.displayPath });
 
   if (op === '/open') {
-    if (lnkOpen) {
+    // 快捷方式追溯：.lnk 不在黑名单时解析真实目标按目标策略处理（目标照常过黑名单）
+    if (isLnkPath(localPath)) {
       let plan;
       try { plan = await shortcutOpenPlan(localPath, cfg); }
       catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
