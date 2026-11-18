@@ -136,7 +136,7 @@ All API endpoints are protected by a webpage allowlist: the app's own UI origin 
 | GET | `/api/read?path=<abs>` | Read text file content (max 5 MB) |
 | GET | `/api/office-preview?path=<abs>` | Office/Design preview (doc/docx/xls/xlsx/ppt/pptx/psd/psb/ai) |
 | GET | `/api/thumb?path=<abs>` | Low-res thumbnail (64px-edge JPEG) for images/PSD/PSB/AI; SVG passthrough; `.lnk` shortcuts serve the target's Explorer icon (PNG 32px); 404 when none |
-| GET | `/api/shortcut-info?path=<abs>` | Resolve a `.lnk` shortcut's real target (`kind`: dir/file/url); roots/path-blacklist/extension policy applies to the target |
+| GET | `/api/shortcut-info?path=<abs>` | Resolve a `.lnk` shortcut's real target (`kind`: dir/file/url); roots/path-blacklist/extension policy applies to the target. If `.lnk` is listed in `blockedExtensions`, shortcuts are fully banned (open/preview/icon/create all reject) |
 | GET | `/api/archive-list?path=<abs>&subdir=<dir>` | List archive contents (ZIP/JAR/TAR/GZ/TGZ/RAR/7Z, virtual directory) |
 | GET | `/api/archive-extract?path=<abs>&entry=<name>` | Extract single file from archive (multi-format) |
 | POST | `/api/mkdir` | Create folder `{path, name}` |
@@ -181,7 +181,7 @@ Edit `C:\html-FileNest\config.json`:
   "blockedExtensions": [
     ".exe", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".vbe",
     ".js", ".jse", ".wsf", ".wsh", ".msi", ".cpl", ".hta", ".pif",
-    ".reg", ".inf", ".lnk", ".url", ".dll"
+    ".reg", ".inf", ".url", ".dll"
   ],
   "cacheDir": "C:\\html-FileNest\\cache",
   "cacheMaxAgeHours": 24,
