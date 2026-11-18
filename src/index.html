@@ -1997,6 +1997,26 @@ body {
       'gitignore','gitattributes','dockerfile','makefile'].indexOf(ext) >= 0;
     // 无扩展名文件（如 LICENSE、README、Makefile）也按文本尝试预览
     var noExt = !ext;
+    // 快捷方式信息卡（2026-11-18）：追溯目标展示（双击打开），不再落文本预览报"executable blocked"
+    if (ext === 'lnk') {
+      var lp = document.createElement('div');
+      lp.style.cssText = 'padding:16px;line-height:2';
+      lp.textContent = tr('追溯快捷方式目标…');
+      previewBodyEl.appendChild(lp);
+      apiGet('/api/shortcut-info?path=' + enc(item.path))
+        .then(function (d) {
+          lp.innerHTML = '<div>🔗 ' + tr('快捷方式') + '</div>' +
+            '<div style="word-break:break-all;font-family:monospace"></div>' +
+            '<div style="opacity:.7"></div>';
+          lp.children[1].textContent = d.target;
+          lp.children[2].textContent = d.kind === 'dir' ? tr('双击进入该文件夹') : tr('双击按目标类型打开');
+        })
+        .catch(function (e) {
+          lp.textContent = '🔗 ' + tr('快捷方式') + ' — ' + tr('无法打开: ') + e.message;
+        });
+      addPreviewActions(item, opt.dlUrl);
+      return;
+    }
     if (isImage) {
       var iTok = ++previewToken;
       var img = document.createElement('img');
