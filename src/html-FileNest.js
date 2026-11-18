@@ -878,6 +878,48 @@ function markBadHost(absNorm) {
   _badHost.set(host, Date.now() + 300000);
 }
 
+// —— 网络盘形态等价（2026-11-18）：映射盘符（Z:）↔ UNC（\\server\share）双向换算 —— //
+// SMB 快捷方式目标与 roots 常以不同形态记录同一共享（一边映射盘、一边 UNC），
+// 跨形态匹配不上会把真实存在的目标误报"找不到来源"；按当前会话磁盘映射换算形态重试。
+// 映射查询缓存 15s（仅在失配兜底路径触发，spawnSync 百 ms 级可接受）。
+let _driveMap = { at: 0, list: [] };
+function getDriveMappingsSync() {
+  if (Date.now() - _driveMap.at < 15000) return _driveMap.list;
+  const list = [];
+  try {
+    const r = Bun.spawnSync(['powershell', '-NoProfile', '-NonInteractive', '-Command',
+      "Get-SmbMapping | ForEach-Object { Write-Output ($_.LocalPath + '|' + $_.RemotePath) }"]);
+    const out = String(r.stdout || '');
+    for (const line of out.split(/\r?\n/)) {
+      const i = line.indexOf('|');
+      if (i <= 0) continue;
+      const local = line.slice(0, i).trim().replace(/[\\\/]+$/, '').toLowerCase();
+      const remote = line.slice(i + 1).trim().replace(/[\\\/]+$/, '').toLowerCase();
+      if (/^[a-z]:$/.test(local) && remote.startsWith('\\\\')) list.push({ local, remote });
+    }
+  } catch (e) {}
+  _driveMap = { at: Date.now(), list };
+  return list;
+}
+
+// 路径的等价形态列表（自身形态除外）：盘符形态 ↔ UNC 形态
+function mapPathForms(p, maps) {
+  const s = String(p || '');
+  const out = [];
+  const m = s.match(/^([a-zA-Z]):(.*)$/);
+  if (m) {
+    const hit = maps.find(x => x.local === (m[1] + ':').toLowerCase());
+    if (hit) out.push(hit.remote + m[2]);
+    return out;
+  }
+  const nl = s.toLowerCase();
+  for (const x of maps) {
+    if (nl === x.remote) out.push(x.local);
+    else if (nl.startsWith(x.remote + '\\')) out.push(x.local + s.slice(x.remote.length));
+  }
+  return out;
+}
+
 function resolveAllowedPath(pathStr, cfg, opts) {
   const s = String(pathStr || '');
   if (!s) throw new Error('path required');
@@ -899,6 +941,25 @@ function resolveAllowedPath(pathStr, cfg, opts) {
     if (src.type !== 'local') continue;
     if (matchAnyRoot(norm, src.roots)) return norm;
   }
+  // —— 形态/短名兜底（2026-11-18）：网络盘快捷方式目标与 roots 常为同一共享的不同形态
+  //    （映射盘 vs UNC）或 8.3 短名——换算形态 + realpath 解短名后重试，仍不匹配才拒绝 ——
+  for (const alt of mapPathForms(norm, getDriveMappingsSync())) {
+    for (const name of Object.keys(cfg.sources)) {
+      const src = cfg.sources[name];
+      if (src.type !== 'local') continue;
+      if (matchAnyRoot(alt, src.roots)) return alt;
+    }
+  }
+  try {
+    const real = normalizeAbs(fs.realpathSync.native(norm));
+    if (real.toLowerCase() !== norm.toLowerCase()) {
+      for (const name of Object.keys(cfg.sources)) {
+        const src = cfg.sources[name];
+        if (src.type !== 'local') continue;
+        if (matchAnyRoot(real, src.roots)) return real;
+      }
+    }
+  } catch (e) {}
   throw new Error('path not in any configured source');
 }
 
@@ -2707,6 +2768,58 @@ function isLnkPath(p) {
   return path.win32.extname(String(p || '').replace(/[. ]+$/, '')).toLowerCase() === '.lnk';
 }
 
+// .lnk 二进制兜底解析（2026-11-18）：部分网络盘/NAS 生成的快捷方式 COM 读回 TargetPath 为空
+// （目标只存 ItemIDList/非常规块）；直接读 .lnk 的 LinkInfo 块，再扫内嵌 UNC/盘符路径字符串救回
+function parseLnkTarget(lnkPath) {
+  try {
+    const buf = fs.readFileSync(lnkPath);
+    if (buf.length < 76 || buf.readUInt32LE(0) !== 0x4C) return '';
+    const flags = buf.readUInt32LE(20);
+    let best = '';
+    const consider = (s) => {
+      const t = String(s || '').trim();
+      if (t.length < 4 || t.length > 320) return;
+      if (/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^[a-z]:[\\\/]/i.test(t)) return;   // URL 不取
+      if (t.length > best.length) best = t;
+    };
+    const readAnsi = (off) => {
+      if (!off || off >= buf.length) return '';
+      const end = buf.indexOf(0, off);
+      return buf.slice(off, end < 0 ? buf.length : end).toString('latin1');
+    };
+    if ((flags & 0x02) && buf.length >= 104) {   // HasLinkInfo
+      const liFlags = buf.readUInt32LE(84);
+      const baseOff = buf.readUInt32LE(92);
+      const netOff = buf.readUInt32LE(96);
+      const suffixOff = buf.readUInt32LE(100);
+      const suf = readAnsi(76 + suffixOff);
+      const join = (base) => (suf && suf !== '.' ? path.win32.join(base, suf) : base);
+      if ((liFlags & 0x01) && baseOff) consider(join(readAnsi(76 + baseOff)));
+      if ((liFlags & 0x02) && netOff && (76 + netOff + 12) <= buf.length) {
+        const cn = 76 + netOff;
+        const nnOff = buf.readUInt32LE(cn + 8);
+        const netName = nnOff ? readAnsi(cn + nnOff) : '';
+        if (netName) consider(join(netName));
+      }
+    }
+    if (!best) {
+      // 字符串扫描兜底：ANSI + UTF-16LE 里找 UNC / 绝对盘符路径，取最长候选
+      const res = [
+        /\\\\[A-Za-z0-9_.$-]+(?:\\[^\\/:*?"<>|\x00\r\n]+)+/g,
+        /[A-Za-z]:\\(?:[^\\/:*?"<>|\x00\r\n]+\\)*[^\\/:*?"<>|\x00\r\n]+/g
+      ];
+      for (const txt of [buf.toString('latin1'), buf.toString('utf16le')]) {
+        for (const re of res) {
+          re.lastIndex = 0;
+          let m;
+          while ((m = re.exec(txt))) consider(m[0]);
+        }
+      }
+    }
+    return best;
+  } catch (e) { return ''; }
+}
+
 // WScript.Shell COM 解析 .lnk 目标（与 createShortcutLnk 同款 -EncodedCommand 零注入）；
 // 目标含环境变量则展开；解析失败/空目标返回 ''；URL 目标原样返回（由调用方识别）
 async function resolveShortcutTarget(lnkPath) {
@@ -2727,7 +2840,13 @@ async function resolveShortcutTarget(lnkPath) {
     { stdout: 'pipe', stderr: 'ignore' });
   const out = await new Response(proc.stdout).text();
   await proc.exited;
-  return out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
+  let t = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
+  if (!t) t = parseLnkTarget(lnkPath);   // COM 读空 → .lnk 二进制兜底（网络盘/NAS 快捷方式）
+  if (t) t = t.replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (m, k) => (process.env[k] != null ? process.env[k] : m));
+  if (t && !/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^[a-z]:[\\\/]/i.test(t) && !/^[\\/]{2}/.test(t)) {
+    t = path.win32.resolve(dir, t);   // 相对目标 → 相对 .lnk 所在目录定绝对
+  }
+  return t;
 }
 
 // 快捷方式打开计划：解析目标 → 过安全边界（roots+路径黑名单+扩展名黑名单按目标判定）→
@@ -2745,12 +2864,20 @@ async function shortcutOpenPlan(lnkPath, cfg) {
     return { kind: 'url', target };   // URL 目标（http/https/mailto 等）→ 系统默认处理
   }
   const abs = resolveAllowedPath(target, cfg);   // roots + 黑名单 + 符号链接真实路径
-  let st;
-  try { st = await fs.promises.stat(abs); } catch (e) { throw new Error('shortcut target not found'); }
-  if (st.isDirectory()) return { kind: 'dir', target: abs };
-  const extCheck = checkExtension(abs, cfg);
+  let st = await fs.promises.stat(abs).catch(() => null);
+  let openPath = abs;
+  if (!st) {
+    // 形态兜底（2026-11-18）：映射盘在本会话不可见时改走 UNC 形态（反之亦然）
+    for (const alt of mapPathForms(abs, getDriveMappingsSync())) {
+      st = await fs.promises.stat(alt).catch(() => null);
+      if (st) { openPath = alt; break; }
+    }
+  }
+  if (!st) throw new Error('shortcut target not found');
+  if (st.isDirectory()) return { kind: 'dir', target: openPath };
+  const extCheck = checkExtension(openPath, cfg);
   if (!extCheck.ok) throw new Error(extCheck.reason);   // 目标扩展名在黑名单（如 .exe）→ 拦截
-  return { kind: 'file', target: abs };
+  return { kind: 'file', target: openPath };
 }
 
 // 快捷方式信息（UI 双击 .lnk 前问询）：文件夹目标→前端进目录，文件目标→前端走 /open
