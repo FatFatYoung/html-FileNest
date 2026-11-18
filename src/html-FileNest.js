@@ -759,6 +759,12 @@ function isBareHost(p) {
   return /^\\\\[^\\]+$/.test(p);
 }
 
+// UNC 网络位置根（\\host 或 \\host\share，无更深路径）：服务器根/共享根整体作为
+// 目标时是"网络位置"，stat 不可靠，按管理器导航语义处理
+function isNetRoot(p) {
+  return /^\\\\[^\\]+(\\[^\\]+)?$/.test(p);
+}
+
 // 控制台输出解码：net view 等系统命令按 OEM 代码页输出（中文 Windows = GBK），
 // 直接当 UTF-8 解码会乱码（2026-11-13 修：共享名乱码导致子目录打不开）
 function oemLabel() {
@@ -2971,7 +2977,7 @@ async function comShortcutTargetCscript(lnkPath) {
 
 // 快捷方式打开计划：解析目标 → 过安全边界（roots+路径黑名单+扩展名黑名单按目标判定）→
 // 返回 { kind:'dir'|'file'|'url', target }；不通过/目标失效抛 Error（原因即拦截理由）。
-// 网络位置目标（\\host 主机根）与目录同语义 kind='dir'（管理器内导航进入）。
+// 网络位置目标（\\host 主机根、\\host\share 共享根）与目录同语义 kind='dir'（管理器内导航进入）。
 // 目标在黑名单（路径或扩展名）→ 拦截，杜绝用 .lnk 绕过黑名单；lnk 链目标仍是 .lnk →
 // 命中扩展名黑名单拒绝（不做链式递归，防环）。
 async function shortcutOpenPlan(lnkPath, cfg) {
@@ -2987,11 +2993,12 @@ async function shortcutOpenPlan(lnkPath, cfg) {
     return { kind: 'url', target };   // URL 目标（http/https/mailto 等）→ 系统默认处理
   }
   const abs = resolveAllowedPath(target, cfg);   // roots + 黑名单 + 符号链接真实路径
-  // 网络位置目标（\\host 主机根）：fs.stat 无法判定服务器根（Windows 共享枚举是另一套
-  // API），产品自身对主机根按 net view 列共享（listDir isBareHost 分支）——故与目录同
-  // 语义：双击即在管理器内导航进入，与首页点击网络盘入口一致；不依赖系统窗口
-  // （服务上下文 spawn 的 explorer 窗口不可见，曾致"双击无反应无报错"）。
-  if (isBareHost(abs)) return { kind: 'dir', target: abs };
+  // 网络位置目标（\\host 主机根或 \\host\share 共享根）：fs.stat 无法可靠判定
+  // （Windows 共享枚举是另一套 API），产品自身对主机根按 net view 列共享、对共享根按
+  // /api/ls 列目录——故与目录同语义：双击即在管理器内导航进入，与首页点击网络盘入口
+  // 一致；不依赖系统窗口（服务上下文 spawn 的 explorer 窗口不可见，曾致"双击无反应
+  // 无报错"）。
+  if (isNetRoot(abs)) return { kind: 'dir', target: abs };
   let st = await fs.promises.stat(abs).catch(() => null);
   let openPath = abs;
   if (!st) {
