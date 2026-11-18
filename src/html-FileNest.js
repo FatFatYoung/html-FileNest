@@ -960,7 +960,13 @@ function resolveAllowedPath(pathStr, cfg, opts) {
       }
     }
   } catch (e) {}
-  throw new Error('path not in any configured source');
+  const rootPeek = [];
+  for (const name of Object.keys(cfg.sources)) {
+    const src = cfg.sources[name];
+    if (src.type === 'local') for (const r of src.roots) rootPeek.push(r);
+  }
+  throw new Error('path not in any configured source: ' + norm
+    + ' [roots: ' + rootPeek.slice(0, 3).join(' | ') + ']');
 }
 
 function listRoots(res, cfg) {
@@ -2768,56 +2774,125 @@ function isLnkPath(p) {
   return path.win32.extname(String(p || '').replace(/[. ]+$/, '')).toLowerCase() === '.lnk';
 }
 
-// .lnk 二进制兜底解析（2026-11-18）：部分网络盘/NAS 生成的快捷方式 COM 读回 TargetPath 为空
-// （目标只存 ItemIDList/非常规块）；直接读 .lnk 的 LinkInfo 块，再扫内嵌 UNC/盘符路径字符串救回
-function parseLnkTarget(lnkPath) {
+// .lnk 二进制兜底解析（2026-11-18 v2，客户案例驱动）：部分网络盘/NAS/资源管理器生成的快捷
+// 方式 COM 读回 TargetPath 为空（目标只存 ItemIDList/非常规块）；解析 LinkInfo/环境变量块的
+// 结构化路径，再扫内嵌 UNC/盘符字符串救回。候选按【可靠度】排序而非“最长获胜”：
+//   结构化 LinkInfo 拼接/ExpString(Unicode) > UTF-16LE 扫描（中文路径真身）> ANSI 扫描 >
+//   latin1 容错扫描（GBK 断串 mojibake，垫底）；与 .lnk 同名的目标加权（共享空间.lnk
+//   → ...\共享空间）。长垃圾不再抢戏（客户症状：中文 ANSI 断串 + 长垃圾赢真路径）。
+function parseLnkCandidates(lnkPath) {
+  const out = [];
+  const push = (s, rank) => {
+    const t = String(s || '').trim().replace(/\//g, '\\');
+    if (t.length < 4 || t.length > 520) return;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^[a-z]:[\\\/]/i.test(t)) return;   // URL 不取
+    if (!/^[\\/]{2}/.test(t) && !/^[a-z]:[\\\/]/i.test(t)) return;             // 只收 UNC/绝对盘符
+    out.push({ t, rank });
+  };
   try {
     const buf = fs.readFileSync(lnkPath);
-    if (buf.length < 76 || buf.readUInt32LE(0) !== 0x4C) return '';
+    if (buf.length < 76 || buf.readUInt32LE(0) !== 0x4C) return [];
     const flags = buf.readUInt32LE(20);
-    let best = '';
-    const consider = (s) => {
-      const t = String(s || '').trim();
-      if (t.length < 4 || t.length > 320) return;
-      if (/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^[a-z]:[\\\/]/i.test(t)) return;   // URL 不取
-      if (t.length > best.length) best = t;
-    };
-    const readAnsi = (off) => {
-      if (!off || off >= buf.length) return '';
+    const readAnsiZ = (off) => {
+      if (!off || off < 0 || off >= buf.length) return '';
       const end = buf.indexOf(0, off);
       return buf.slice(off, end < 0 ? buf.length : end).toString('latin1');
     };
-    if ((flags & 0x02) && buf.length >= 104) {   // HasLinkInfo
-      const liFlags = buf.readUInt32LE(84);
-      const baseOff = buf.readUInt32LE(92);
-      const netOff = buf.readUInt32LE(96);
-      const suffixOff = buf.readUInt32LE(100);
-      const suf = readAnsi(76 + suffixOff);
-      const join = (base) => (suf && suf !== '.' ? path.win32.join(base, suf) : base);
-      if ((liFlags & 0x01) && baseOff) consider(join(readAnsi(76 + baseOff)));
-      if ((liFlags & 0x02) && netOff && (76 + netOff + 12) <= buf.length) {
-        const cn = 76 + netOff;
-        const nnOff = buf.readUInt32LE(cn + 8);
-        const netName = nnOff ? readAnsi(cn + nnOff) : '';
-        if (netName) consider(join(netName));
-      }
+    const readUtf16Z = (off) => {
+      if (!off || off < 0 || off + 2 > buf.length) return '';
+      let end = off;
+      while (end + 1 < buf.length && !(buf[end] === 0 && buf[end + 1] === 0)) end += 2;
+      return buf.subarray(off, end).toString('utf16le');
+    };
+    const join2 = (base, suf) => {
+      const b2 = String(base || '').trim();
+      const s2 = String(suf || '').trim();
+      if (!b2 || !s2 || s2 === '.') return b2;
+      return b2.replace(/[\\/]+$/, '') + '\\' + s2.replace(/^[\\/]+/, '');
+    };
+    let pos = 76;
+    if (flags & 0x01) pos += 2 + buf.readUInt16LE(pos);   // LinkTargetIDList（PIDL 不重建，跳过）
+    if ((flags & 0x02) && pos + 28 <= buf.length) {       // HasLinkInfo：顺序块（IDList 存在时不在 76）
+      try {
+        const liSize = buf.readUInt32LE(pos);
+        const liEnd = Math.min(pos + (liSize || buf.length), buf.length);
+        const hdrSize = buf.readUInt32LE(pos + 4);
+        const liFlags = buf.readUInt32LE(pos + 8);
+        const baseOff = buf.readUInt32LE(pos + 0x10);
+        const netOff = buf.readUInt32LE(pos + 0x14);
+        const sufOff = buf.readUInt32LE(pos + 0x18);
+        const uni = hdrSize >= 0x24;
+        const baseOffU = uni ? buf.readUInt32LE(pos + 0x1c) : 0;
+        const sufOffU = uni ? buf.readUInt32LE(pos + 0x20) : 0;
+        const rel = (off) => (off > 0 && pos + off < liEnd ? pos + off : 0);
+        const suffix = (sufOffU && rel(sufOffU) ? readUtf16Z(rel(sufOffU)) : '')
+          || readAnsiZ(rel(sufOff)) || '';
+        if (netOff && rel(netOff)) {
+          const cn = rel(netOff);
+          const nnOffU = cn + 0x0c < liEnd ? buf.readUInt32LE(cn + 0x0c) : 0;
+          const nnOff = cn + 0x08 < liEnd ? buf.readUInt32LE(cn + 0x08) : 0;
+          const netName = (nnOffU && cn + nnOffU < liEnd ? readUtf16Z(cn + nnOffU) : '')
+            || readAnsiZ(nnOff ? cn + nnOff : 0) || '';
+          if (netName) push(join2(netName, suffix), 900);
+        }
+        if ((liFlags & 0x01) && (baseOffU || baseOff)) {
+          const base = (baseOffU && rel(baseOffU) ? readUtf16Z(rel(baseOffU)) : '')
+            || readAnsiZ(rel(baseOff)) || '';
+          if (base) push(join2(base, suffix), 850);
+        }
+      } catch {}
     }
-    if (!best) {
-      // 字符串扫描兜底：ANSI + UTF-16LE 里找 UNC / 绝对盘符路径，取最长候选
-      const res = [
-        /\\\\[A-Za-z0-9_.$-]+(?:\\[^\\/:*?"<>|\x00\r\n]+)+/g,
-        /[A-Za-z]:\\(?:[^\\/:*?"<>|\x00\r\n]+\\)*[^\\/:*?"<>|\x00\r\n]+/g
-      ];
-      for (const txt of [buf.toString('latin1'), buf.toString('utf16le')]) {
-        for (const re of res) {
-          re.lastIndex = 0;
-          let m;
-          while ((m = re.exec(txt))) consider(m[0]);
+    // StringData（Name/RelativePath/WorkingDir/Args/Icon 按 flags 存在位，定长跳过找 ExtraData）
+    try {
+      for (const bit of [0x04, 0x08, 0x10, 0x20, 0x40]) {
+        if (!(flags & bit)) continue;
+        if (flags & 0x80) {                       // IsUnicode：UTF-16 双 0 结尾
+          let e = pos;
+          while (e + 1 < buf.length && !(buf[e] === 0 && buf[e + 1] === 0)) e += 2;
+          pos = e + 2;
+        } else {
+          const e = buf.indexOf(0, pos);
+          pos = e < 0 ? buf.length : e + 1;
         }
       }
+    } catch {}
+    // ExtraData：EnvironmentVariableDataBlock（0xA0000001）——完整目标的 Unicode/ANSI 双份
+    try {
+      let p = pos;
+      while (p + 8 <= buf.length) {
+        const sz = buf.readUInt32LE(p);
+        if (!sz || sz < 8 || p + sz > buf.length) break;
+        if (buf.readUInt32LE(p + 4) === 0xa0000001) {
+          push(readUtf16Z(p + 268), 950);    // TargetUnicode（260 ANSI + 8 头之后）
+          push(readAnsiZ(p + 8), 800);       // TargetAnsi（GBK 断串风险，靠 Unicode 优先）
+          break;
+        }
+        p += sz;
+      }
+    } catch {}
+    // 字符串扫描兜底：UTF-16LE 先（中文路径真身），ANSI 后
+    const rx = [
+      /\\\\[A-Za-z0-9_.$-]+(?:\\[^\\/:*?"<>|\x00\r\n]+)+/g,
+      /[A-Za-z]:\\(?:[^\\/:*?"<>|\x00\r\n]+\\)*[^\\/:*?"<>|\x00\r\n]+/g
+    ];
+    for (const [txt, rank] of [[buf.toString('utf16le'), 600], [buf.toString('latin1'), 100]]) {
+      for (const re of rx) {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(txt))) push(m[0], rank);
+      }
     }
-    return best;
-  } catch (e) { return ''; }
+  } catch { return []; }
+  const stem = path.win32.basename(lnkPath).replace(/[. ]+$/, '').replace(/\.lnk$/i, '').toLowerCase();
+  const seen = new Set();
+  return out
+    .map((c) => ({ ...c, score: c.rank + (stem && c.t.toLowerCase().endsWith(stem) ? 2000 : 0) }))
+    .sort((a, b) => b.score - a.score || b.t.length - a.t.length)
+    .filter((c) => (seen.has(c.t.toLowerCase()) ? false : (seen.add(c.t.toLowerCase()), true)));
+}
+
+function parseLnkTarget(lnkPath) {
+  return (parseLnkCandidates(lnkPath)[0] || {}).t || '';
 }
 
 // WScript.Shell COM 解析 .lnk 目标（与 createShortcutLnk 同款 -EncodedCommand 零注入）；
@@ -2836,17 +2911,57 @@ async function resolveShortcutTarget(lnkPath) {
     + "if($t -match '^[a-z]:[\\\\/]' -or $t -like '\\\\*'){ $t=[Environment]::ExpandEnvironmentVariables($t) }\n"
     + "Write-Output $t";
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
-  const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-    { stdout: 'pipe', stderr: 'ignore' });
-  const out = await new Response(proc.stdout).text();
-  await proc.exited;
-  let t = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
-  if (!t) t = parseLnkTarget(lnkPath);   // COM 读空 → .lnk 二进制兜底（网络盘/NAS 快捷方式）
+  let out = '';
+  try {
+    const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+      { stdout: 'pipe', stderr: 'ignore' });
+    out = await new Response(proc.stdout).text();
+    await proc.exited;
+  } catch {}
+  let comT = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
+  if (!comT) comT = await comShortcutTargetCscript(lnkPath);   // PowerShell 失败/被禁 → cscript 备援
+  // 二进制结构化候选优先、COM 兜底（2026-11-18 客户案例）：无 LinkInfo 的非常规 .lnk 里
+  // WSH 会吐截断值（如 \\host\share 根，恰好存在会误导），ExpString/LinkInfo 的完整路径证据更强；
+  // 候选已按可靠度排序（ExpString Unicode > LinkInfo 拼接 > UTF-16 扫描 > ANSI 扫描）+ .lnk 同名加权
+  const cands = parseLnkCandidates(lnkPath);
+  // 截断值剔除（2026-11-18 客户案例双向验证）：证据度低（同）的候选若是证据度高（同）候选
+  // （或其映射形态/真实路径）的路径前缀 → 是残缺截断值（如 LinkInfo 只给到共享根、COM 只给
+  // 到 \\host\share），弃；反之截断值证据更高（ExpString 完整路径）则保——防长垃圾/根值抢戏
+  const keySet = (p) => {
+    const ks = new Set();
+    const add = (x) => { const v = String(x || '').toLowerCase().replace(/[\\/]+$/, ''); if (v) ks.add(v); };
+    add(p);
+    try { for (const f of mapPathForms(p, getDriveMappingsSync())) add(f); } catch {}
+    try { add(fs.realpathSync.native(p)); } catch {}
+    return ks;
+  };
+  const all = [];
+  if (comT) all.push({ t: comT, rank: 920 });   // COM：结构化但非常规 .lnk 会吐截断值
+  for (const c of cands) all.push(c);
+  const keys = all.map((c) => keySet(c.t));
+  const keep = all.filter((a, i) => !all.some((b, j) => j !== i && b.rank >= a.rank
+    && [...keys[j]].some((k) => [...keys[i]].some((m) => m.length < k.length && k.startsWith(m + '\\')))));
+  const t0 = (keep[0] || all[0] || {}).t || '';
+  let t = String(t0 || '').trim();
   if (t) t = t.replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (m, k) => (process.env[k] != null ? process.env[k] : m));
   if (t && !/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^[a-z]:[\\\/]/i.test(t) && !/^[\\/]{2}/.test(t)) {
     t = path.win32.resolve(dir, t);   // 相对目标 → 相对 .lnk 所在目录定绝对
   }
   return t;
+}
+
+// PowerShell 整体失败/被禁（执行策略/AppLocker）时的 COM 备援：cscript + WScript.Shell
+// （临时 .vbs 传参，零注入；用完即删）
+async function comShortcutTargetCscript(lnkPath) {
+  try {
+    const vf = path.join(os.tmpdir(), 'fin_lnk_' + crypto.randomBytes(6).toString('hex') + '.vbs');
+    fs.writeFileSync(vf, 'Set w=CreateObject("WScript.Shell")\nSet s=w.CreateShortcut(WScript.Arguments(0))\nWScript.Echo s.TargetPath\n');
+    const proc = Bun.spawn(['cscript', '//Nologo', vf, lnkPath], { stdout: 'pipe', stderr: 'ignore' });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    try { fs.unlinkSync(vf); } catch {}
+    return out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
+  } catch { return ''; }
 }
 
 // 快捷方式打开计划：解析目标 → 过安全边界（roots+路径黑名单+扩展名黑名单按目标判定）→
@@ -2859,7 +2974,9 @@ async function shortcutOpenPlan(lnkPath, cfg) {
   for (let hop = 0; hop < 4 && target && isLnkPath(target); hop++) {
     target = await resolveShortcutTarget(resolveAllowedPath(target, cfg));
   }
-  if (!target || isLnkPath(target)) throw new Error('shortcut target not found');
+  if (!target || isLnkPath(target)) {
+    throw new Error('shortcut target not found' + (target ? ' (lnk chain unresolved: ' + target + ')' : ' (no readable target in lnk)'));
+  }
   if (/^[a-z][a-z0-9+.-]*:/i.test(target) && !/^[a-z]:[\\\/]/i.test(target)) {
     return { kind: 'url', target };   // URL 目标（http/https/mailto 等）→ 系统默认处理
   }
@@ -2873,7 +2990,7 @@ async function shortcutOpenPlan(lnkPath, cfg) {
       if (st) { openPath = alt; break; }
     }
   }
-  if (!st) throw new Error('shortcut target not found');
+  if (!st) throw new Error('shortcut target not found: ' + abs + ' (stat failed)');
   if (st.isDirectory()) return { kind: 'dir', target: openPath };
   const extCheck = checkExtension(openPath, cfg);
   if (!extCheck.ok) throw new Error(extCheck.reason);   // 目标扩展名在黑名单（如 .exe）→ 拦截
