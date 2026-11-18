@@ -2964,8 +2964,9 @@ async function comShortcutTargetCscript(lnkPath) {
   } catch { return ''; }
 }
 
-// 快捷方式打开计划：解析目标 → 过安全边界（roots+路径黑名单+扩展名黑名单按目标判定）→
-// 返回 { kind:'dir'|'file'|'url', target }；不通过/目标失效抛 Error（原因即拦截理由）。
+// 快捷方式打开计划：解析目标 → 过安全边界（本地 dir/file 目标：roots+路径黑名单+扩展名
+// 黑名单按目标判定；URL/网络根目标：OS 级移交，只过坏主机+路径黑名单）→
+// 返回 { kind:'dir'|'file'|'url'|'native', target }；不通过/目标失效抛 Error（原因即拦截理由）。
 // 目标在黑名单（路径或扩展名）→ 拦截，杜绝用 .lnk 绕过黑名单；lnk 链目标仍是 .lnk →
 // 命中扩展名黑名单拒绝（不做链式递归，防环）。
 async function shortcutOpenPlan(lnkPath, cfg) {
@@ -2980,6 +2981,16 @@ async function shortcutOpenPlan(lnkPath, cfg) {
   if (/^[a-z][a-z0-9+.-]*:/i.test(target) && !/^[a-z]:[\\\/]/i.test(target)) {
     return { kind: 'url', target };   // URL 目标（http/https/mailto 等）→ 系统默认处理
   }
+  // 网络计算机/共享根目标（2026-11-18）：\\server 或 \\server\share 这类服务器/共享根无法用
+  // fs.stat 判存在（WSD"网络设备"快捷方式目标就是服务器根），语义同 URL 目标——交系统打开
+  // （与 Windows 双击行为一致）。OS 级移交天然不在本地 roots 内（roots 只圈可浏览范围），
+  // 故与 URL 一样豁免 roots 检查；但坏主机、路径黑名单照常拦截，杜绝 .lnk 绕过。
+  const tNorm = String(target).replace(/\//g, '\\').replace(/\\+$/, '');
+  if (/^\\\\[^\\\/]+(\\[^\\\/]+)?$/.test(tNorm)) {
+    checkBadHost(tNorm);
+    if (isDenied(tNorm, cfg)) throw new Error('path is denied by blacklist');
+    return { kind: 'native', target: tNorm };
+  }
   const abs = resolveAllowedPath(target, cfg);   // roots + 黑名单 + 符号链接真实路径
   let st = await fs.promises.stat(abs).catch(() => null);
   let openPath = abs;
@@ -2991,11 +3002,6 @@ async function shortcutOpenPlan(lnkPath, cfg) {
     }
   }
   if (!st) {
-    // 网络计算机/共享根目标（2026-11-18）：\\server 或 \\server\share 这类服务器/共享根
-    // 无法用 fs.stat 存在性判断（Windows 里 WSD"网络设备"快捷方式目标就是服务器根，
-    // 资源管理器可正常打开）→ 交系统打开（与 Windows 双击行为一致），不报 not found。
-    const uncRoot = /^\\\\[^\\\/]+(\\[^\\\/]+)?$/.test(abs.replace(/\//g, '\\').replace(/\\+$/, ''));
-    if (uncRoot) return { kind: 'native', target: abs };
     throw new Error('shortcut target not found: ' + abs + ' (stat failed)');
   }
   if (st.isDirectory()) return { kind: 'dir', target: openPath };
@@ -3738,6 +3744,35 @@ async function writeFileOp(res, data, cfg) {
   sendJson(res, 200, { ok: true, path: file });
 }
 
+// —— UNC 网络目标可达性探测（2026-11-18）——
+// explorer.exe 对不可达的 UNC 目标会静默回退到"文档"文件夹（无反应无报错）；
+// 打开前并行探测 SMB(445/139) 与 WSD(5357) 端口，均不通时返回不可达，由调用方给用户明确报错。
+function probeUncReachable(uncTarget, timeoutMs) {
+  timeoutMs = timeoutMs || 2200;
+  const m = /^\\\\([^\\\/]+)/.exec(String(uncTarget || ''));
+  if (!m) return Promise.resolve({ reachable: true, detail: '' });
+  const host = m[1];
+  const net = require('net');
+  const probePort = (port) => new Promise((resolve) => {
+    let done = false;
+    const sock = new net.Socket();
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch (e) {}
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    sock.once('connect', () => { clearTimeout(timer); finish(true); });
+    sock.once('error', () => { clearTimeout(timer); finish(false); });
+    try { sock.connect(port, host); } catch (e) { clearTimeout(timer); finish(false); }
+  });
+  return Promise.all([445, 139, 5357].map(probePort)).then((rs) => {
+    const ok = rs.some(Boolean);
+    return { reachable: ok, detail: ok ? '' : 'network path not found' };
+  });
+}
+
 // —— 用系统默认程序打开文件/文件夹 ——
 // explorer.exe 参数数组传递，不经任何 shell 解释（防命令注入；勿改回 cmd /c start）
 function openWithSystem(targetPath) {
@@ -3771,6 +3806,12 @@ async function openOp(res, data, cfg) {
     try { plan = await shortcutOpenPlan(data.path, cfg); }
     catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
     if (plan.kind === 'url' || plan.kind === 'native') {
+      if (plan.kind === 'native') {
+        const probe = await probeUncReachable(plan.target);
+        if (!probe.reachable) {
+          return sendJson(res, 404, { ok: false, error: 'shortcut target unreachable: ' + plan.target + ' (' + probe.detail + ')' });
+        }
+      }
       openWithSystem(plan.target);
       return sendJson(res, 200, { ok: true, path: data.path, target: plan.target, shortcut: true });
     }
@@ -3883,6 +3924,16 @@ async function handleFileOp(op, q, res, cfg) {
       let plan;
       try { plan = await shortcutOpenPlan(localPath, cfg); }
       catch (e) { return sendJson(res, 403, { ok: false, error: e.message }); }
+      if (plan.kind === 'url' || plan.kind === 'native') {
+        if (plan.kind === 'native') {
+          const probe = await probeUncReachable(plan.target);
+          if (!probe.reachable) {
+            return sendJson(res, 404, { ok: false, error: 'shortcut target unreachable: ' + plan.target + ' (' + probe.detail + ')' });
+          }
+        }
+        openWithSystem(plan.target);
+        return sendJson(res, 200, { ok: true, path: target.displayPath, target: plan.target, shortcut: true, method: 'explorer' });
+      }
       localPath = plan.target;
     }
     let replied = false;
