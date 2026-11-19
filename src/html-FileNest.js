@@ -2052,6 +2052,20 @@ async function archiveList(res, q, cfg) {
   sendJson(res, 200, { ok: true, subdir: subdir, items });
 }
 
+// 活动内容（浏览器可当文档执行的类型）：顶层导航到 /api/raw /api/archive-extract 会以应用
+// 同源执行任意脚本并伪造文件管理 API 调用（安全审查 F3，2026-11-19）。
+// 处置：html/xhtml/js/mjs/xml/mht → 强制 attachment（UI 预览走 fetch/textContent，不受影响）；
+//       svg 保留 inline（<img> 缩略图需要）；活动内容一律加 CSP sandbox（导航渲染禁脚本）
+const ACTIVE_CONTENT_ATTACH = new Set(['html', 'htm', 'xhtml', 'js', 'mjs', 'xml', 'mht', 'mhtml']);
+function applyActiveContentGuard(headers, ext) {
+  const e = String(ext || '').replace(/^\./, '').toLowerCase();
+  if (e === 'svg' || ACTIVE_CONTENT_ATTACH.has(e)) headers['Content-Security-Policy'] = 'sandbox';
+  if (ACTIVE_CONTENT_ATTACH.has(e)) {
+    const d = headers['Content-Disposition'];
+    headers['Content-Disposition'] = (d && d.indexOf('inline') === 0) ? ('attachment' + d.slice(6)) : 'attachment';
+  }
+}
+
 // —— 多格式压缩包提取单个文件 ——
 async function archiveExtract(req, res, q, cfg) {
   const file = resolveAllowedPath(q.path, cfg, { trashRead: true });
@@ -2064,11 +2078,13 @@ async function archiveExtract(req, res, q, cfg) {
   const data = await extractEntryFromArchive(file, entry);
   // 猜测 MIME：复用 getMime 全量表（#15，此前独立简表缺 20+ 种类型）
   const mime = getMime(path.extname(entry).toLowerCase().slice(1));
-  res.writeHead(200, {
+  const headers = {
     'Content-Type': mime,
     'Content-Length': data.length,
     'Content-Disposition': 'inline; filename="' + path.basename(entry).replace(/[^\x20-\x7e]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(path.basename(entry))
-  });
+  };
+  applyActiveContentGuard(headers, path.extname(entry));   // 活动内容强制下载（安全审查 F3）
+  res.writeHead(200, headers);
   res.end(data);
 }
 // —— PPT (OLE2) 文本提取：扫描二进制中的 UTF-16LE / ASCII 文本串 ——
@@ -2367,13 +2383,13 @@ async function gdiFallback(srcFile, outFile) {
   } catch (e) { return false; }
 }
 
-function sendImageFile(res, file, mime) {
+function sendImageFile(res, file, mime, extra) {
   const buf = fs.readFileSync(file);
-  res.writeHead(200, {
+  res.writeHead(200, Object.assign({
     'Content-Type': mime,
     'Content-Length': buf.length,
     'Cache-Control': 'private, max-age=86400'
-  });
+  }, extra || {}));
   res.end(buf);
 }
 
@@ -2388,10 +2404,10 @@ async function thumbFile(res, q, cfg) {
   const ext = path.extname(file).toLowerCase();
   const MIME = { '.svg': 'image/svg+xml', '.webp': 'image/webp', '.avif': 'image/avif', '.png': 'image/png', '.gif': 'image/gif', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.ico': 'image/x-icon' };
 
-  // svg 原样回传（浏览器自缩放），限 2MB
+  // svg 原样回传（浏览器自缩放），限 2MB；CSP sandbox 禁文档渲染执行（<img> 不受影响）（安全审查 F3）
   if (ext === '.svg') {
     if (st.size > 2 * 1048576) return sendJson(res, 404, { ok: false, error: 'too large' });
-    return sendImageFile(res, file, MIME[ext]);
+    return sendImageFile(res, file, MIME[ext], { 'Content-Security-Policy': 'sandbox' });
   }
 
   const tdir = path.join(cfg.cacheDir, 'thumbs');
@@ -2616,6 +2632,7 @@ function streamFile(req, res, q, cfg) {
         const asciiName = fname.replace(/[^\x20-\x7e]/g, '_');
         headers['Content-Disposition'] = "inline; filename=\"" + asciiName + "\"; filename*=UTF-8''" + encodeURIComponent(fname);
       }
+      applyActiveContentGuard(headers, ext);   // 活动内容强制下载（安全审查 F3）
 
       const range = req.headers.range;
       if (range) {
@@ -3688,6 +3705,9 @@ async function extractAllOp(res, data, cfg) {
       async function merge(dir) {
         for (const ent of await fs.promises.readdir(dir, { withFileTypes: true })) {
           const s = path.win32.join(dir, ent.name);
+          // 跳过符号链接（安全审查 F4，2026-11-19）：readFile 会跟随链接读到 tmp 之外，
+          // 链接指向目录时还会 EISDIR 中断整个解压——7z 解出的链接一律不合并
+          if (ent.isSymbolicLink()) continue;
           if (ent.isDirectory()) await merge(s);
           else await writeEntry(path.win32.relative(tmp, s), await fs.promises.readFile(s));
         }
