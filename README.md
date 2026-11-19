@@ -311,7 +311,15 @@ html-FileNest/
 
 ## Changelog
 
-**v2.2.1.0 (Latest)**
+**v2.2.2.0 (Latest)**
+
+  **Security**
+  - Windows device namespace paths (`\\.\` and `\\?\`) are now rejected at the path gate — raw device access such as `\\.\PhysicalDrive0` through the file APIs is impossible.
+  - DOS reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9, including forms like `CON.txt`) are rejected in every path and file-name operation, and skipped inside archive extraction — writes to such names would silently land on system devices instead of files.
+  - Browser-active content (HTML / XHTML / JS / MJS / XML / MHT) served by `GET /api/raw` and `GET /api/archive-extract` is now forced to download instead of rendering inside the app's origin (in-app previews are unaffected — they read content as text). SVG keeps inline rendering for image previews but is now served with a `Content-Security-Policy: sandbox` header, so opening it directly can no longer run scripts.
+  - Archive extraction (`rar` / `7z` / `bz2` / `xz`) no longer merges symbolic links out of the temporary extraction folder — a crafted archive cannot smuggle file contents out through a link.
+
+**v2.2.1.0**
 
   **New features**
   - **Instant folder opening on slow storage (two-phase loading)**: a folder now opens immediately showing names and icons while file sizes and modification times stream in right behind them — a 10 000-entry folder on a slow NAS opens in about a second instead of 20+ seconds. Directories already covered by the SQLite index still open instantly with full details.
