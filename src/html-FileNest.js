@@ -498,6 +498,31 @@ function runServer() {
   const cfg = loadConfig();
   // 启动即后台预热共享枚举（等 PowerShell 冷启动），用户点盘符页时已缓存命中（2026-11-16）
   setTimeout(() => { listNetShares().catch(() => {}); }, 500);
+  // 启动后台预热图标/缩略图 FFI 链与解码 worker 池（2026-11-19）：首个用户请求免
+  // dlopen/GDI+ 冷启动 + worker 启动/ JIT 税；失败静默（运行期按需懒加载兜底）
+  setTimeout(() => {
+    try {
+      shellFfi();
+      gdiplusFfi();
+      const pool = thumbPool();
+      if (pool && cfg.cacheDir) {
+        // 每个 worker 发一张微型 BMP 解码任务空转预热（解码路径 JIT + GDI+ 懒初始化）
+        const tdir = path.join(cfg.cacheDir, 'thumbs');
+        if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
+        const warmSrc = path.join(tdir, '_warm.bmp');
+        fs.writeFileSync(warmSrc, tinyBmpBuffer());
+        const outs = [];
+        Promise.all(Array.from({ length: pool.size }, () => {
+          const out = warmSrc + '.' + Math.random().toString(36).slice(2) + '.jpg';
+          outs.push(out);
+          return pool.decode(warmSrc, out);
+        })).then(() => {
+          try { fs.unlinkSync(warmSrc); } catch (e) {}
+          for (const o of outs) { try { fs.unlinkSync(o); } catch (e) {} }
+        }).catch(() => {});
+      }
+    } catch (e) {}
+  }, 700);
   // ★ HTTP 监听失败必须退出：进程活着但端口不通的"半活"状态比死进程更糟——
   //   死进程能被计划任务/重启脚本拉起，半活僵尸会让服务永远隐身（重启后"再也进不去"）
   http.createServer(handleRequest)
@@ -2317,10 +2342,12 @@ function rawThumbToBmp(raw) {
   return rgbaToBmp(r.rgba, r.w, r.h);
 }
 
-// 64px 长边 JPEG 缩略图（q75、不放大）。三级链：GDI+ FFI 原生解码缩放（~200ms/12MP，
-// 2026-11-19 提速）→ jimp 纯 JS（无 native 依赖、完整打包进 exe）→ PowerShell GDI+ 兜底。
-// 成功写 outFile 返回 true。
+// 64px 长边 JPEG 缩略图（q75、不放大）。四级链：worker 池并行 GDI+ 解码（2026-11-19
+// 提速二，16 图冷墙钟 7.2s→亚秒级）→ 内联 GDI+ FFI（池不可用时）→ jimp 纯 JS →
+// PowerShell GDI+ 兜底。成功写 outFile 返回 true。
 async function gdiThumb(srcFile, outFile) {
+  const pool = thumbPool();
+  if (pool && await pool.decode(srcFile, outFile)) return true;
   if (gdiFfiThumb(srcFile, outFile)) return true;
   try {
     const im = await Jimp.fromBuffer(fs.readFileSync(srcFile), JIMP_DECODE_OPTS);
@@ -3266,21 +3293,231 @@ function gdiFfiThumb(srcFile, outFile) {
     if (G.syms.GdipCreateBitmapFromScan0(nw, nh, 0, 0x26200A /* PixelFormat32bppARGB */, 0n, dstOut) !== 0) return false;
     const dst = dstOut.readBigUInt64LE(0);
     try {
-      const grOut = Buffer.alloc(8);
-      if (G.syms.GdipGetImageGraphicsContext(dst, grOut) !== 0) return false;
-      const gr = grOut.readBigUInt64LE(0);
+      // 两步缩放（与 THUMB_WORKER_SRC 内 decodeThumb 保持同步：Bilinear→512 中间图→
+      // HQBicubic→THUMB_EDGE，插值核成本砍 ~2.5 倍，质量贴一步 HQ）
+      const INTER = 512;
+      let drawSrc = img, drawW = w, drawH = h, inter = 0n;
       try {
-        G.syms.GdipSetInterpolationMode(gr, 7 /* HighQualityBicubic */);
-        if (G.syms.GdipDrawImageRectRect(gr, img, 0, 0, nw, nh, 0, 0, w, h, 2 /* UnitPixel */, 0n, 0n, 0n) !== 0) return false;
-      } finally { G.syms.GdipDeleteGraphics(gr); }
-      const clsidJpeg = Buffer.from('01f47c55041ad3119a730000f81ef32e', 'hex');  // {557CF401-1A04-11D3-9A73-0000F81EF32E}
-      if (G.syms.GdipSaveImageToFile(dst, wstr(outFile), clsidJpeg, 0n) !== 0) return false;
-      return fs.existsSync(outFile);
+        if (w > INTER || h > INTER) {
+          const iw = w >= h ? INTER : Math.max(1, Math.round(w * INTER / h));
+          const ih = w >= h ? Math.max(1, Math.round(h * INTER / w)) : INTER;
+          const interOut = Buffer.alloc(8);
+          if (G.syms.GdipCreateBitmapFromScan0(iw, ih, 0, 0x26200A, 0n, interOut) !== 0) return false;
+          inter = interOut.readBigUInt64LE(0);
+          const giOut = Buffer.alloc(8);
+          if (G.syms.GdipGetImageGraphicsContext(inter, giOut) !== 0) return false;
+          const gi = giOut.readBigUInt64LE(0);
+          try {
+            G.syms.GdipSetInterpolationMode(gi, 3 /* Bilinear 快缩 */);
+            if (G.syms.GdipDrawImageRectRect(gi, img, 0, 0, iw, ih, 0, 0, w, h, 2 /* UnitPixel */, 0n, 0n, 0n) !== 0) return false;
+          } finally { G.syms.GdipDeleteGraphics(gi); }
+          drawSrc = inter; drawW = iw; drawH = ih;
+        }
+        const grOut = Buffer.alloc(8);
+        if (G.syms.GdipGetImageGraphicsContext(dst, grOut) !== 0) return false;
+        const gr = grOut.readBigUInt64LE(0);
+        try {
+          G.syms.GdipSetInterpolationMode(gr, 7 /* HighQualityBicubic */);
+          if (G.syms.GdipDrawImageRectRect(gr, drawSrc, 0, 0, nw, nh, 0, 0, drawW, drawH, 2 /* UnitPixel */, 0n, 0n, 0n) !== 0) return false;
+        } finally { G.syms.GdipDeleteGraphics(gr); }
+        const clsidJpeg = Buffer.from('01f47c55041ad3119a730000f81ef32e', 'hex');  // {557CF401-1A04-11D3-9A73-0000F81EF32E}
+        if (G.syms.GdipSaveImageToFile(dst, wstr(outFile), clsidJpeg, 0n) !== 0) return false;
+        return fs.existsSync(outFile);
+      } finally { if (inter) G.syms.GdipDisposeImage(inter); }
     } finally { G.syms.GdipDisposeImage(dst); }
   } catch (e) {
     return false;
   } finally {
     try { if (img && G) G.syms.GdipDisposeImage(img); } catch (e) {}
+  }
+}
+
+// ─── 缩略图并行解码 worker 池（2026-11-19 提速二）────────────────────────────────
+// 基准：16 图文件夹（8×12MP+8×800px）冷缓存墙钟 7.2s——GDI+/jimp 解码同步占住事件
+// 循环，6 并发也被串行化。4 worker 并行解码（写盘缓存各写各的键，天然无竞态）。
+// eval worker + bun:ffi 在 bun build --compile 形态已实证可用；池不可用/单任务失败时
+// 逐级退回内联 GDI+ → jimp → PowerShell，行为不劣于旧版。
+const THUMB_WORKER_SRC = `
+const { parentPort } = require('worker_threads');
+const fs = require('fs');
+const wstr = (s) => Buffer.concat([Buffer.from(String(s), 'utf16le'), Buffer.from([0, 0])]);
+let G = null;
+function gdiplus() {
+  if (G) return G;
+  const { dlopen, FFIType } = require('bun:ffi');
+  const U64 = FFIType.u64, I32 = FFIType.i32, P = FFIType.ptr;
+  const syms = dlopen('gdiplus.dll', {
+    GdiplusStartup: { args: [P, P, P], returns: I32 },
+    GdiplusShutdown: { args: [U64], returns: FFIType.void },
+    GdipCreateBitmapFromFile: { args: [P, P], returns: I32 },
+    GdipGetImageWidth: { args: [U64, P], returns: I32 },
+    GdipGetImageHeight: { args: [U64, P], returns: I32 },
+    GdipCreateBitmapFromScan0: { args: [I32, I32, I32, I32, U64, P], returns: I32 },
+    GdipGetImageGraphicsContext: { args: [U64, P], returns: I32 },
+    GdipSetInterpolationMode: { args: [U64, I32], returns: I32 },
+    GdipDrawImageRectRect: { args: [U64, U64, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, I32, U64, U64, U64], returns: I32 },
+    GdipSaveImageToFile: { args: [U64, P, P, U64], returns: I32 },
+    GdipDisposeImage: { args: [U64], returns: I32 },
+    GdipDeleteGraphics: { args: [U64], returns: I32 }
+  }).symbols;
+  const input = Buffer.alloc(24);
+  input.writeUInt32LE(1, 0);
+  const token = Buffer.alloc(8);
+  if (syms.GdiplusStartup(token, input, 0n) !== 0) throw new Error('GdiplusStartup failed');
+  G = { syms, token: token.readBigUInt64LE(0) };
+  return G;
+}
+function decodeThumb(srcFile, outFile) {
+  let img = 0n, S;
+  try {
+    S = gdiplus().syms;
+    const imgOut = Buffer.alloc(8);
+    if (S.GdipCreateBitmapFromFile(wstr(srcFile), imgOut) !== 0) return false;
+    img = imgOut.readBigUInt64LE(0);
+    if (!img) return false;
+    const wb = Buffer.alloc(4), hb = Buffer.alloc(4);
+    if (S.GdipGetImageWidth(img, wb) !== 0 || S.GdipGetImageHeight(img, hb) !== 0) return false;
+    const w = wb.readUInt32LE(0), h = hb.readUInt32LE(0);
+    if (w < 1 || h < 1) return false;
+    const EDGE = 64;
+    let nw = w, nh = h;
+    if (w > EDGE || h > EDGE) {
+      nw = w >= h ? EDGE : Math.max(1, Math.round(w * EDGE / h));
+      nh = w >= h ? Math.max(1, Math.round(h * EDGE / w)) : EDGE;
+    }
+    const dstOut = Buffer.alloc(8);
+    if (S.GdipCreateBitmapFromScan0(nw, nh, 0, 0x26200A, 0n, dstOut) !== 0) return false;
+    const dst = dstOut.readBigUInt64LE(0);
+    try {
+      // 两步缩放（2026-11-19）：超大降采样一步 HQBicubic 的插值核是耗时大头（实测
+      // 12MP→64px mode7 ~390ms vs mode3 ~140ms）；先 Bilinear 快缩到 512 长边中间图、
+      // 再 HQBicubic 收到 THUMB_EDGE——质量接近一步 HQ、耗时接近一步 Bilinear
+      const INTER = 512;
+      let drawSrc = img, drawW = w, drawH = h, inter = 0n;
+      try {
+        if (w > INTER || h > INTER) {
+          const iw = w >= h ? INTER : Math.max(1, Math.round(w * INTER / h));
+          const ih = w >= h ? Math.max(1, Math.round(h * INTER / w)) : INTER;
+          const interOut = Buffer.alloc(8);
+          if (S.GdipCreateBitmapFromScan0(iw, ih, 0, 0x26200A, 0n, interOut) !== 0) return false;
+          inter = interOut.readBigUInt64LE(0);
+          const giOut = Buffer.alloc(8);
+          if (S.GdipGetImageGraphicsContext(inter, giOut) !== 0) return false;
+          const gi = giOut.readBigUInt64LE(0);
+          try {
+            S.GdipSetInterpolationMode(gi, 3);
+            if (S.GdipDrawImageRectRect(gi, img, 0, 0, iw, ih, 0, 0, w, h, 2, 0n, 0n, 0n) !== 0) return false;
+          } finally { S.GdipDeleteGraphics(gi); }
+          drawSrc = inter; drawW = iw; drawH = ih;
+        }
+        const grOut = Buffer.alloc(8);
+        if (S.GdipGetImageGraphicsContext(dst, grOut) !== 0) return false;
+        const gr = grOut.readBigUInt64LE(0);
+        try {
+          S.GdipSetInterpolationMode(gr, 7);
+          if (S.GdipDrawImageRectRect(gr, drawSrc, 0, 0, nw, nh, 0, 0, drawW, drawH, 2, 0n, 0n, 0n) !== 0) return false;
+        } finally { S.GdipDeleteGraphics(gr); }
+        const clsidJpeg = Buffer.from('01f47c55041ad3119a730000f81ef32e', 'hex');
+        if (S.GdipSaveImageToFile(dst, wstr(outFile), clsidJpeg, 0n) !== 0) return false;
+        return fs.existsSync(outFile);
+      } finally { if (inter) S.GdipDisposeImage(inter); }
+    } finally { S.GdipDisposeImage(dst); }
+  } catch (e) {
+    return false;
+  } finally {
+    try { if (img && S) S.GdipDisposeImage(img); } catch (e) {}
+  }
+}
+parentPort.on('message', (m) => {
+  let ok = false;
+  try { ok = decodeThumb(m.src, m.out); } catch (e) { ok = false; }
+  parentPort.postMessage({ id: m.id, ok: ok === true });
+});
+`;
+
+let _thumbPoolState = undefined;   // undefined=未初始化 / false=不可用（勿重复重试）/ object=池
+
+// 预热用 4×4 24bpp BMP（54 字节头 + 像素），让 worker 走一遍完整解码路径
+function tinyBmpBuffer() {
+  const w = 4, h = 4, row = w * 3;
+  const buf = Buffer.alloc(54 + row * h);
+  buf.write('BM', 0, 'ascii');
+  buf.writeUInt32LE(buf.length, 2);
+  buf.writeUInt32LE(54, 10);
+  buf.writeUInt32LE(40, 14);
+  buf.writeInt32LE(w, 18);
+  buf.writeInt32LE(h, 22);
+  buf.writeUInt16LE(1, 26);
+  buf.writeUInt16LE(24, 28);
+  buf.writeUInt32LE(row * h, 34);
+  return buf;
+}
+function thumbPool() {
+  if (_thumbPoolState !== undefined) return _thumbPoolState || null;
+  _thumbPoolState = false;
+  try {
+    const { Worker } = require('worker_threads');
+    // 2 核机也要 2 worker（cpus-1 会限成 1 白搭；解码突发型负载可轻度超订）；上限 4
+    const n = Math.max(2, Math.min(4, (os.cpus() || []).length || 2));
+    const slots = [];
+    const pending = new Map();
+    let nextId = 1;
+
+    const settle = (id, ok) => {
+      const job = pending.get(id);
+      if (!job) return;
+      pending.delete(id);
+      clearTimeout(job.timer);
+      job.slot.busy--;
+      job.resolve(ok);
+    };
+    const makeWorker = (slot) => {
+      const w = new Worker(THUMB_WORKER_SRC, { eval: true });
+      slot.w = w;
+      w.on('message', (m) => {
+        if (slot.w !== w) return;
+        settle(m.id, m.ok === true);
+      });
+      const die = () => {
+        if (slot.w !== w) return;
+        slot.w = null;
+        for (const [id, job] of [...pending]) {
+          if (job.slot === slot) settle(id, false);
+        }
+        try { w.terminate(); } catch (e) {}
+        slot.fails = (slot.fails || 0) + 1;
+        if (_thumbPoolState && slot.fails <= 2) {
+          try { makeWorker(slot); } catch (e) { slot.w = null; }
+        }
+      };
+      w.on('error', die);
+      w.on('exit', die);
+    };
+    for (let i = 0; i < n; i++) {
+      const slot = { w: null, busy: 0, fails: 0 };
+      makeWorker(slot);
+      slots.push(slot);
+    }
+    _thumbPoolState = {
+      size: slots.length,
+      decode(srcFile, outFile) {
+        return new Promise((resolve) => {
+          const cand = slots.filter(s => s.w).sort((a, b) => a.busy - b.busy);
+          if (!cand.length) return resolve(false);
+          const slot = cand[0];
+          const id = nextId++;
+          const job = { slot, resolve, timer: null };
+          job.timer = setTimeout(() => { settle(id, false); }, 30000);
+          pending.set(id, job);
+          slot.busy++;
+          try { slot.w.postMessage({ id, src: srcFile, out: outFile }); }
+          catch (e) { settle(id, false); }
+        });
+      }
+    };
+    return _thumbPoolState;
+  } catch (e) {
+    return null;
   }
 }
 

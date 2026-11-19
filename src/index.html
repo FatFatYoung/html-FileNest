@@ -706,7 +706,7 @@ body {
   var THUMB_EXTS = ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'ico', 'webp', 'avif', 'apng', 'heic', 'heif', 'psd', 'psb', 'ai', 'lnk'];
   var thumbQ = [], thumbActive = 0;
   var THUMB_INFLIGHT = [];   // 在途 Image 引用：视线移动/导航时主动取消下载
-  var THUMB_CONC = 3;
+  var THUMB_CONC = 6;
   var thumbScanTimer = 0;
   function thumbable(item) {
     if (!item || item._thumb || item._thumbTried) return false;
