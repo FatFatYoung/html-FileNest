@@ -3065,6 +3065,151 @@ async function shortcutInfoOp(res, q, cfg) {
   return sendJson(res, 200, { ok: true, kind: plan.kind, target: plan.target });
 }
 
+// ─── 进程内 FFI 图标提取（2026-11-19 提速）────────────────────────────────────
+// 基准：PowerShell 路径每图标 ~1.0-1.3s（进程 spawn + Add-Type 税），FFI 直调 shell32/
+// comctl32/user32/gdi32 取 jumbo 256px 图标帧并编透明 PNG，单图标 <20ms。失败退 PS 链路。
+let _shellFfi = null;
+function shellFfi() {
+  if (_shellFfi) return _shellFfi;
+  const { dlopen, FFIType } = require('bun:ffi');
+  const U64 = FFIType.u64;   // 句柄/指针统一 u64 传参（BigInt），出参走 Buffer
+  _shellFfi = {
+    shell: dlopen('shell32.dll', {
+      SHGetFileInfoW: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32], returns: U64 },
+      SHGetImageList: { args: [FFIType.i32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 }
+    }).symbols,
+    comctl: dlopen('comctl32.dll', {
+      ImageList_GetIcon: { args: [U64, FFIType.i32, FFIType.u32], returns: U64 }
+    }).symbols,
+    user: dlopen('user32.dll', {
+      DestroyIcon: { args: [U64], returns: FFIType.bool },
+      GetIconInfo: { args: [U64, FFIType.ptr], returns: FFIType.bool }
+    }).symbols,
+    gdi: dlopen('gdi32.dll', {
+      CreateCompatibleDC: { args: [U64], returns: U64 },
+      DeleteDC: { args: [U64], returns: FFIType.bool },
+      GetObjectW: { args: [U64, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
+      GetDIBits: { args: [U64, U64, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
+      DeleteObject: { args: [U64], returns: FFIType.bool }
+    }).symbols
+  };
+  return _shellFfi;
+}
+
+const wstr = (s) => Buffer.from(String(s) + '\0', 'utf16le');
+
+// PNG 编码（RGBA8、filter 0、zlib 透明度无损）
+let _crcT = null;
+function crc32(buf) {
+  if (!_crcT) {
+    _crcT = new Int32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      _crcT[n] = c;
+    }
+  }
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = _crcT[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function pngChunk(type, data) {
+  const out = Buffer.alloc(8 + data.length + 4);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'ascii');
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])), 8 + data.length);
+  return out;
+}
+function encodePngRGBA(rgba, w, h) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 6;
+  const stride = w * 4 + 1;
+  const raw = Buffer.alloc(stride * h);
+  for (let y = 0; y < h; y++) raw.set(rgba.subarray(y * w * 4, (y + 1) * w * 4), y * stride + 1);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw, { level: 6 })),
+    pngChunk('IEND', Buffer.alloc(0))
+  ]);
+}
+
+// HICON → 32bpp BGRA（预乘）→ 反预乘 + 行翻转 → RGBA 顶行在前
+function hiconToRgba(F, hIcon) {
+  const ii = Buffer.alloc(32);
+  if (!F.user.GetIconInfo(hIcon, ii)) return null;
+  const hbmColor = ii.readBigUInt64LE(24);
+  const hbmMask = ii.readBigUInt64LE(16);
+  try {
+    const bm = Buffer.alloc(64);
+    if (F.gdi.GetObjectW(hbmColor, 64, bm) <= 0) return null;
+    const w = bm.readInt32LE(4), h = bm.readInt32LE(8);
+    if (w < 1 || h < 1 || w > 1024 || h > 1024) return null;
+    const bmi = Buffer.alloc(40);
+    bmi.writeUInt32LE(40, 0); bmi.writeInt32LE(w, 4); bmi.writeInt32LE(h, 8);
+    bmi.writeUInt16LE(1, 12); bmi.writeUInt16LE(32, 14);
+    const dib = Buffer.alloc(w * h * 4);
+    const hdc = F.gdi.CreateCompatibleDC(0n);
+    if (!hdc) return null;
+    const got = F.gdi.GetDIBits(hdc, hbmColor, 0, h, dib, bmi, 0);
+    F.gdi.DeleteDC(hdc);
+    if (got < 1) return null;
+    const rgba = Buffer.alloc(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const src = (h - 1 - y) * w * 4;      // BMP 底行在前 → PNG 顶行在前
+      for (let x = 0; x < w; x++) {
+        const i = src + x * 4, o = (y * w + x) * 4;
+        const b = dib[i], g = dib[i + 1], r = dib[i + 2], a = dib[i + 3];
+        if (a > 0 && a < 255) {
+          const k = 255 / a;
+          rgba[o] = Math.min(255, r * k) | 0; rgba[o + 1] = Math.min(255, g * k) | 0; rgba[o + 2] = Math.min(255, b * k) | 0;
+        } else { rgba[o] = r; rgba[o + 1] = g; rgba[o + 2] = b; }
+        rgba[o + 3] = a;
+      }
+    }
+    return { rgba, w, h };
+  } finally {
+    try { if (hbmColor) F.gdi.DeleteObject(hbmColor); } catch (e) {}
+    try { if (hbmMask) F.gdi.DeleteObject(hbmMask); } catch (e) {}
+  }
+}
+
+// 目标 shell 图标 → 透明 PNG（256 jumbo，退 32px SHGFI_ICON）；成功写 outFile 返回 true
+function ffiIconPng(targetPath, outFile) {
+  let hIcon = 0n, F;
+  try {
+    F = shellFfi();
+    const sfi = Buffer.alloc(696);
+    const p = wstr(targetPath);
+    // jumbo 路线：系统图像列表索引 → SHIL_JUMBO(4) 256px 帧
+    const r = F.shell.SHGetFileInfoW(p, 0, sfi, 696, 0x4000);
+    if (r) {
+      const iid = Buffer.from('2659eb462e5817409fdfe8998daa0950', 'hex');
+      const himlOut = Buffer.alloc(8);
+      const hr = F.shell.SHGetImageList(4, iid, himlOut);
+      const himl = himlOut.readBigUInt64LE(0);
+      if (hr >= 0 && himl) hIcon = F.comctl.ImageList_GetIcon(himl, sfi.readInt32LE(8), 1);
+    }
+    // 退 32px 大图标
+    if (!hIcon) {
+      const sfi2 = Buffer.alloc(696);
+      const r2 = F.shell.SHGetFileInfoW(p, 0, sfi2, 696, 0x100);
+      if (r2) hIcon = sfi2.readBigUInt64LE(0);
+    }
+    if (!hIcon) return false;
+    const img = hiconToRgba(F, hIcon);
+    if (!img) return false;
+    fs.writeFileSync(outFile, encodePngRGBA(img.rgba, img.w, img.h));
+    return true;
+  } catch (e) {
+    return false;
+  } finally {
+    try { if (hIcon && F) F.user.DestroyIcon(hIcon); } catch (e) {}
+  }
+}
+
 // 快捷方式图标：继承目标在资源管理器显示的原图标（SHGetFileInfo 系统图像列表索引 →
 // SHIL_JUMBO 256px 大图标；WPF Imaging 编码 PNG 保留 alpha 透明背景，失败退 GDI+ SourceCopy，
 // 再退 SHGFI_ICON 32px）；存 cacheDir/thumbs；失败回 404 前端保留默认图标
@@ -3082,6 +3227,7 @@ async function shortcutIconOp(res, lnkPath, cfg) {
     .update('lnkico2|' + lnkPath + '|' + st.mtimeMs + '|' + st.size).digest('hex').slice(0, 20);
   const outFile = path.join(tdir, key + '.png');
   if (fs.existsSync(outFile)) return sendImageFile(res, outFile, 'image/png');
+  if (ffiIconPng(lnkPath, outFile)) return sendImageFile(res, outFile, 'image/png');  // FFI 快路径 <20ms
   const esc = (s) => String(s).replace(/'/g, "''");
   const script = "$ErrorActionPreference='Stop'\n"
     + "Add-Type -AssemblyName System.Drawing\n"
