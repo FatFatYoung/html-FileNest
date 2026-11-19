@@ -743,6 +743,9 @@ function normalizeAbs(s) {
   if (m) {
     const parts = m[1].split(/[\\/]+/).filter(Boolean);
     if (!parts.length) throw new Error('invalid path');
+    // \\.\ 设备命名空间与 \\?\ 前缀一律拒绝（2026-11-19 安全审查 F1）：
+    // 它们可绕开 roots/deniedPaths 的字符串比对，\\.\PhysicalDrive0 等裸设备可被直写
+    if (parts[0] === '.' || parts[0] === '?') throw new Error('invalid path');
     let tail = parts.slice(1).join('\\');
     if (tail) {
       tail = path.win32.normalize(tail).replace(/[\\/]+$/, '');
@@ -929,6 +932,13 @@ function mapPathForms(p, maps) {
   return out;
 }
 
+// DOS 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，含 CON.txt 形态）：Win32 会把它们
+// 映射到设备而非文件（NUL 吞写入、COM1 开串口），路径闸与命名校验一律拒绝（2026-11-19 安全审查 F6）
+const DOS_DEVICE_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+function isDosDeviceName(name) {
+  return DOS_DEVICE_RE.test(String(name || '').replace(/[. ]+$/, ''));
+}
+
 function resolveAllowedPath(pathStr, cfg, opts) {
   const s = String(pathStr || '');
   if (!s) throw new Error('path required');
@@ -938,6 +948,11 @@ function resolveAllowedPath(pathStr, cfg, opts) {
   catch (e) { throw new Error('invalid path'); }
   if (!norm.startsWith('\\\\') && !/^[A-Za-z]:\\/.test(norm)) {
     throw new Error('must be absolute path');
+  }
+  if (isDosDeviceName(path.win32.basename(norm))) {
+    const e = new Error('forbidden path: reserved device name');
+    e.status = 400;
+    throw e;
   }
   checkBadHost(norm);   // 坏 UNC 主机 5 分钟内快速拒绝（2026-11-16）
   if (isDenied(norm, cfg) && !(opts && opts.trashRead && isRecycleChild(norm))) {
@@ -2672,7 +2687,7 @@ function getMime(ext) {
 async function mkdirOp(res, data, cfg) {
   const dir = resolveAllowedPath(data.path, cfg);
   const name = String(data.name || '').trim();
-  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..') {
+  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..' || isDosDeviceName(name)) {
     throw new Error('invalid folder name');
   }
   const full = path.win32.join(dir, name);
@@ -2684,7 +2699,7 @@ async function mkdirOp(res, data, cfg) {
 async function mkfileOp(res, data, cfg) {
   const dir = resolveAllowedPath(data.path, cfg);
   const name = String(data.name || '').trim();
-  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..' || /[. ]$/.test(name)) {
+  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..' || /[. ]$/.test(name) || isDosDeviceName(name)) {
     throw new Error('invalid file name');
   }
   const full = resolveAllowedPath(path.win32.join(dir, name), cfg);
@@ -3381,7 +3396,7 @@ async function unfavoriteOp(res, data) {
 async function renameOp(res, data, cfg) {
   const src = resolveAllowedPath(data.path, cfg);
   const name = String(data.newName || '').trim();
-  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..') {
+  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..' || isDosDeviceName(name)) {
     throw new Error('invalid name');
   }
   const dst = path.win32.join(path.win32.dirname(src), name);
@@ -3615,6 +3630,8 @@ async function extractAllOp(res, data, cfg) {
     //     同时去掉条目名开头分隔符并拒绝 '..' 段与盘符前缀
     const name = String(relName).replace(/^[\\/]+/, '');
     if (!name || /^[a-zA-Z]:/.test(name) || /(^|[\\/])\.\.([\\/]|$)/.test(name)) throw new Error('unsafe entry path: ' + relName);
+    // 保留设备名条目跳过（2026-11-19 安全审查 F6）：写入会被 Win32 映射到设备（NUL 吞数据等）
+    if (isDosDeviceName(path.win32.basename(name))) { skipped++; return; }
     const target = path.win32.resolve(dest, name.replace(/[\\/]+/g, path.win32.sep));
     const base = dest.endsWith(path.win32.sep) ? dest : dest + path.win32.sep;
     if (!target.toLowerCase().startsWith(base.toLowerCase())) throw new Error('unsafe entry path: ' + relName);
@@ -3837,7 +3854,7 @@ async function openOp(res, data, cfg) {
 async function uploadOp(req, res, q, cfg) {
   const dir = resolveAllowedPath(q.path, cfg);
   const name = String(q.name || '').trim();
-  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..' || /[. ]$/.test(name)) {
+  if (!name || /[\\\/:*?"<>|]/.test(name) || name === '.' || name === '..' || /[. ]$/.test(name) || isDosDeviceName(name)) {
     throw new Error('invalid name');
   }
   const full = resolveAllowedPath(path.win32.join(dir, name), cfg);
