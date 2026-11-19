@@ -703,7 +703,7 @@ async function handleApi(req, res, p, q, cfg) {
       if (p === '/api/props')             return await propsOp(res, data, cfg);
       if (p === '/api/zip-create')        return await zipCreateOp(res, data, cfg);
       if (p === '/api/recycle-restore')   return await recycleRestoreOp(res, data, cfg);
-      if (p === '/api/recycle-restore-all') return await recycleRestoreAllOp(res);
+      if (p === '/api/recycle-restore-all') return await recycleRestoreAllOp(res, cfg);
       if (p === '/api/recycle-purge')     return await recyclePurgeOp(res, data, cfg);
       if (p === '/api/recycle-empty')     return await recycleEmptyOp(res, data, cfg);
       if (p === '/api/mv')     return await mvOp(res, data, cfg);
@@ -2062,6 +2062,9 @@ function applyActiveContentGuard(headers, ext) {
   if (e === 'svg' || ACTIVE_CONTENT_ATTACH.has(e)) headers['Content-Security-Policy'] = 'sandbox';
   if (ACTIVE_CONTENT_ATTACH.has(e)) {
     const d = headers['Content-Disposition'];
+    // 显式下载（dl=1）已带 filename：保留不覆盖（2026-11-19 修 F3 回归——此前 dl 分支也被
+    // 压成裸 attachment，下载出来丢了原始文件名）
+    if (d && d.indexOf('attachment') === 0) return;
     headers['Content-Disposition'] = (d && d.indexOf('inline') === 0) ? ('attachment' + d.slice(6)) : 'attachment';
   }
 }
@@ -3477,8 +3480,10 @@ async function recycleListOp(res) {
   sendJson(res, 200, { ok: true, items: await recycleMetaList() });
 }
 
-async function recycleRestoreOne(info) {
-  let dest = info.originalPath;
+async function recycleRestoreOne(info, cfg) {
+  // 恢复目标复验（2026-11-19 安全复审）：journal 写入后配置可能变化（roots 缩窄/黑名单更新），
+  // 恢复前按当前策略重过 resolveAllowedPath；越界条目抛错留在回收站，不写到当前策略外
+  let dest = resolveAllowedPath(info.originalPath, cfg);
   if (fs.existsSync(dest)) {
     // 原位置已被占用：加后缀避免覆盖
     const ext = path.win32.extname(dest), base = dest.slice(0, dest.length - ext.length);
@@ -3502,18 +3507,18 @@ async function recycleRestoreOp(res, data, cfg) {
   const list = await recycleMetaList();
   const info = list.find(x => x.id === data.id);
   if (!info) throw new Error('recycle item not found');
-  const dest = await recycleRestoreOne(info);
+  const dest = await recycleRestoreOne(info, cfg);
   indexWrite(dest);   // 库同步
   await recycleSave(list.filter(x => x.id !== info.id));
   sendJson(res, 200, { ok: true, restored: dest });
 }
 
-async function recycleRestoreAllOp(res) {
+async function recycleRestoreAllOp(res, cfg) {
   const list = await recycleMetaList();
   const remain = [];
   let count = 0;
   for (const info of list) {
-    try { const d = await recycleRestoreOne(info); indexWrite(d); count++; } catch (e) { remain.push(info); }
+    try { const d = await recycleRestoreOne(info, cfg); indexWrite(d); count++; } catch (e) { remain.push(info); }
   }
   await recycleSave(remain);
   sendJson(res, 200, { ok: true, count, failed: remain.length });
