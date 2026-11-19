@@ -3065,8 +3065,11 @@ async function shortcutInfoOp(res, q, cfg) {
   return sendJson(res, 200, { ok: true, kind: plan.kind, target: plan.target });
 }
 
-// 快捷方式图标：继承目标在资源管理器显示的原图标（SHGetFileInfo 解析 .lnk 取目标图标 →
-// PNG 32px；文件夹/URL/失效目标全兼容），存 cacheDir/thumbs；失败回 404 前端保留默认图标
+// 快捷方式图标：继承目标在资源管理器显示的原图标（SHGetFileInfo 系统图像列表索引 →
+// SHIL_JUMBO 256px 大图标；WPF Imaging 编码 PNG 保留 alpha 透明背景，失败退 GDI+ SourceCopy，
+// 再退 SHGFI_ICON 32px）；存 cacheDir/thumbs；失败回 404 前端保留默认图标
+// 2026-11-19 图标优化：旧版 SHGFI_ICON 32px + Icon.ToBitmap() 有两病——32px 放大到 64px 网格
+// 显示发糊，ToBitmap() 烘死 alpha 通道背景变黑；jumbo+WPF 编码一次解决清晰度与透明背景
 async function shortcutIconOp(res, lnkPath, cfg) {
   const st = await fs.promises.stat(lnkPath).catch(() => null);
   if (!st || !st.isFile()) return sendJson(res, 404, { ok: false, error: 'not found' });
@@ -3076,22 +3079,33 @@ async function shortcutIconOp(res, lnkPath, cfg) {
   const tdir = path.join(cfg.cacheDir, 'thumbs');
   if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
   const key = crypto.createHash('sha1')
-    .update('lnkico|' + lnkPath + '|' + st.mtimeMs + '|' + st.size).digest('hex').slice(0, 20);
+    .update('lnkico2|' + lnkPath + '|' + st.mtimeMs + '|' + st.size).digest('hex').slice(0, 20);
   const outFile = path.join(tdir, key + '.png');
   if (fs.existsSync(outFile)) return sendImageFile(res, outFile, 'image/png');
   const esc = (s) => String(s).replace(/'/g, "''");
   const script = "$ErrorActionPreference='Stop'\n"
     + "Add-Type -AssemblyName System.Drawing\n"
-    + "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class ShellIco{[StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]public struct SHFILEINFO{public IntPtr hIcon;public int iIcon;public uint dwAttributes;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)]public string szDisplayName;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=80)]public string szTypeName;}[DllImport(\"shell32.dll\",CharSet=CharSet.Unicode)]public static extern IntPtr SHGetFileInfo(string pszPath,uint dwFileAttributes,ref SHFILEINFO psfi,uint cbFileInfo,uint uFlags);[DllImport(\"user32.dll\")]public static extern bool DestroyIcon(IntPtr h);}'\n"
+    + "Add-Type -AssemblyName PresentationCore,WindowsBase\n"
+    + "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class ShellIco{[StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]public struct SHFILEINFO{public IntPtr hIcon;public int iIcon;public uint dwAttributes;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)]public string szDisplayName;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=80)]public string szTypeName;}[DllImport(\"shell32.dll\",CharSet=CharSet.Unicode)]public static extern IntPtr SHGetFileInfo(string pszPath,uint dwFileAttributes,ref SHFILEINFO psfi,uint cbFileInfo,uint uFlags);[DllImport(\"shell32.dll\")]public static extern int SHGetImageList(int iImageList,ref Guid riid,out IntPtr ppv);[DllImport(\"comctl32.dll\")]public static extern IntPtr ImageList_GetIcon(IntPtr himl,int i,uint uFlags);[DllImport(\"user32.dll\")]public static extern bool DestroyIcon(IntPtr h);}'\n"
+    + "function Save-IconPng([IntPtr]$hIcon,[string]$out){\n"
+    + "  $src=[System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($hIcon,[System.Windows.Int32Rect]::Empty,[System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions())\n"
+    + "  $enc=New-Object System.Windows.Media.Imaging.PngBitmapEncoder\n"
+    + "  $enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($src))\n"
+    + "  $fs=[System.IO.File]::Create($out)\n"
+    + "  try{$enc.Save($fs)}finally{$fs.Dispose()}\n"
+    + "}\n"
     + "$sfi=New-Object ShellIco+SHFILEINFO\n"
     + "$sz=[uint32][System.Runtime.InteropServices.Marshal]::SizeOf($sfi)\n"
-    + "$ptr=[ShellIco]::SHGetFileInfo('" + esc(lnkPath) + "',[uint32]0,[ref]$sfi,$sz,[uint32]0x100)\n"
-    + "if($ptr -eq [IntPtr]::Zero -or $sfi.hIcon -eq [IntPtr]::Zero){ throw 'no icon' }\n"
-    + "$ico=[System.Drawing.Icon]::FromHandle($sfi.hIcon)\n"
-    + "$bmp=$ico.ToBitmap()\n"
-    + "$bmp.Save('" + esc(outFile) + "',[System.Drawing.Imaging.ImageFormat]::Png)\n"
-    + "$bmp.Dispose()\n"
-    + "[ShellIco]::DestroyIcon($sfi.hIcon) | Out-Null";
+    + "$ptr=[ShellIco]::SHGetFileInfo('" + esc(lnkPath) + "',[uint32]0,[ref]$sfi,$sz,[uint32]0x4000)\n"
+    + "$guid=[Guid]'46EB5926-582E-4017-9FDF-E8998DAA0950'\n"
+    + "$himl=[IntPtr]::Zero\n"
+    + "$hr=[ShellIco]::SHGetImageList(4,[ref]$guid,[ref]$himl)\n"
+    + "$hIcon=[IntPtr]::Zero\n"
+    + "if($hr -ge 0 -and $himl -ne [IntPtr]::Zero -and $ptr -ne [IntPtr]::Zero){$hIcon=[ShellIco]::ImageList_GetIcon($himl,$sfi.iIcon,[uint32]1)}\n"
+    + "if($hIcon -eq [IntPtr]::Zero){$ptr2=[ShellIco]::SHGetFileInfo('" + esc(lnkPath) + "',[uint32]0,[ref]$sfi,$sz,[uint32]0x100);if($ptr2 -ne [IntPtr]::Zero){$hIcon=$sfi.hIcon}}\n"
+    + "if($hIcon -eq [IntPtr]::Zero){ throw 'no icon' }\n"
+    + "Save-IconPng $hIcon '" + esc(outFile) + "'\n"
+    + "[ShellIco]::DestroyIcon($hIcon) | Out-Null";
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
     { stdout: 'ignore', stderr: 'ignore' });
@@ -3122,6 +3136,7 @@ public struct SHFILEINFO { public IntPtr hIcon; public int iIcon; public uint dw
 '@
 }
 if (-not ('System.Drawing.Icon' -as [type])) { Add-Type -AssemblyName System.Drawing | Out-Null }
+Add-Type -AssemblyName PresentationCore,WindowsBase
 
 function Res3([string]$s) {
   if (-not $s) { return '' }
@@ -3139,20 +3154,34 @@ function Strip-Accel3([string]$s) {
   return ($s -replace '\s*\(\&[^\)]*\)', '').Trim()
 }
 function Get-IconB64b([string]$ext) {
+  $info = New-Object SnNew2.SH+SHFILEINFO
+  $sz = [uint32]([System.Runtime.InteropServices.Marshal]::SizeOf($info))
+  $h = [IntPtr]::Zero
+  $tmp = $null
   try {
-    $info = New-Object SnNew2.SH+SHFILEINFO
-    $flags = [uint32]0x110
-    $h = [SnNew2.SH]::SHGetFileInfo(('x' + $ext), [uint32]0x80, [ref]$info, [uint32]([System.Runtime.InteropServices.Marshal]::SizeOf($info)), $flags)
+    # 策略1：虚拟文件名 + SHGFI_USEFILEATTRIBUTES（无 I/O）
+    $h = [SnNew2.SH]::SHGetFileInfo(('x' + $ext), [uint32]0x80, [ref]$info, $sz, [uint32]0x180)
+    if ($h -eq [IntPtr]::Zero -or $info.hIcon -eq [IntPtr]::Zero) {
+      # 策略2：真实临时文件查类型图标（部分系统会话下虚拟查询返回空，2026-11-19 Server 2022 实证）
+      $tmp = Join-Path $env:TEMP ('fnico_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + $ext)
+      [void](New-Item -Path $tmp -ItemType File -Force)
+      $h = [SnNew2.SH]::SHGetFileInfo($tmp, [uint32]0, [ref]$info, $sz, [uint32]0x100)
+    }
     if ($h -eq [IntPtr]::Zero -or $info.hIcon -eq [IntPtr]::Zero) { return '' }
-    $ic = [System.Drawing.Icon]::FromHandle($info.hIcon)
-    $bmp = $ic.ToBitmap()
+    # WPF Imaging 编码保留 alpha 透明背景（Icon.ToBitmap() 会烘死 alpha 变黑底），32px 源图 16px 显示不糊
+    $src = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($info.hIcon, [System.Windows.Int32Rect]::Empty, [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions())
+    $enc = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
+    $enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($src))
     $ms = New-Object System.IO.MemoryStream
-    $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+    $enc.Save($ms)
     $b64 = [Convert]::ToBase64String($ms.ToArray())
-    $bmp.Dispose(); $ic.Dispose()
-    [void][SnNew2.SH]::DestroyIcon($info.hIcon)
+    $ms.Dispose()
     return $b64
   } catch { return '' }
+  finally {
+    if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    if ($info.hIcon -ne [IntPtr]::Zero) { try { [void][SnNew2.SH]::DestroyIcon($info.hIcon) } catch { } }
+  }
 }
 
 $items = New-Object System.Collections.Generic.List[object]
