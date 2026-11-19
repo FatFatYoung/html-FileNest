@@ -2317,10 +2317,11 @@ function rawThumbToBmp(raw) {
   return rgbaToBmp(r.rgba, r.w, r.h);
 }
 
-// 64px 长边 JPEG 缩略图（q75、不放大）。jimp 纯 JS 解码缩放——无 native 依赖、
-// 完整打包进 exe（sharp 的 .node 走动态加载路径，bun build --compile 嵌不进）；
-// 成功写 outFile 返回 true。长尾格式（ICO 等）退回 PowerShell GDI+ 兜底。
+// 64px 长边 JPEG 缩略图（q75、不放大）。三级链：GDI+ FFI 原生解码缩放（~200ms/12MP，
+// 2026-11-19 提速）→ jimp 纯 JS（无 native 依赖、完整打包进 exe）→ PowerShell GDI+ 兜底。
+// 成功写 outFile 返回 true。
 async function gdiThumb(srcFile, outFile) {
+  if (gdiFfiThumb(srcFile, outFile)) return true;
   try {
     const im = await Jimp.fromBuffer(fs.readFileSync(srcFile), JIMP_DECODE_OPTS);
     await writeThumbJpeg(im, outFile);
@@ -3207,6 +3208,79 @@ function ffiIconPng(targetPath, outFile) {
     return false;
   } finally {
     try { if (hIcon && F) F.user.DestroyIcon(hIcon); } catch (e) {}
+  }
+}
+
+// GDI+ flat API FFI（2026-11-19 提速）：原生解码缩放缩略图，替换 jimp 纯 JS 大图路径
+// （基准 12MP JPEG：jimp 1.5-3s 且阻塞事件循环 → GDI+ ~200ms）；系统自带 gdiplus.dll，
+// 无新增打包依赖。失败逐级退 jimp → PowerShell 兜底。
+let _gdiplusFfi = null;
+function gdiplusFfi() {
+  if (_gdiplusFfi) return _gdiplusFfi;
+  const { dlopen, FFIType } = require('bun:ffi');
+  const U64 = FFIType.u64, I32 = FFIType.i32, P = FFIType.ptr;
+  const syms = dlopen('gdiplus.dll', {
+    GdiplusStartup: { args: [P, P, P], returns: I32 },
+    GdiplusShutdown: { args: [U64], returns: FFIType.void },
+    GdipCreateBitmapFromFile: { args: [P, P], returns: I32 },
+    GdipGetImageWidth: { args: [U64, P], returns: I32 },
+    GdipGetImageHeight: { args: [U64, P], returns: I32 },
+    GdipCreateBitmapFromScan0: { args: [I32, I32, I32, I32, U64, P], returns: I32 },
+    GdipGetImageGraphicsContext: { args: [U64, P], returns: I32 },
+    GdipSetInterpolationMode: { args: [U64, I32], returns: I32 },
+    GdipDrawImageRectRect: { args: [U64, U64, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, FFIType.f32, I32, U64, U64, U64], returns: I32 },
+    GdipSaveImageToFile: { args: [U64, P, P, U64], returns: I32 },
+    GdipDisposeImage: { args: [U64], returns: I32 },
+    GdipDeleteGraphics: { args: [U64], returns: I32 }
+  }).symbols;
+  // GdiplusStartupInput { u32 version; ptr DebugEventProc; i32 SuppressBackgroundThread; i32 SuppressExternalCodecs }
+  const input = Buffer.alloc(24);
+  input.writeUInt32LE(1, 0);
+  const token = Buffer.alloc(8);
+  if (syms.GdiplusStartup(token, input, 0n) !== 0) throw new Error('GdiplusStartup failed');
+  _gdiplusFfi = { syms, token: token.readBigUInt64LE(0) };
+  process.on('exit', () => { try { syms.GdiplusShutdown(_gdiplusFfi.token); } catch (e) {} });
+  return _gdiplusFfi;
+}
+
+// GDI+ 原生缩略图：解码 → HighQualityBicubic 缩放到 THUMB_EDGE 内（不放大）→ JPEG q75
+// （GDI+ 默认编码质量即 75，与 jimp/PS 路径一致）；成功写 outFile 返回 true
+function gdiFfiThumb(srcFile, outFile) {
+  let img = 0n, G;
+  try {
+    G = gdiplusFfi();
+    const imgOut = Buffer.alloc(8);
+    if (G.syms.GdipCreateBitmapFromFile(wstr(srcFile), imgOut) !== 0) return false;
+    img = imgOut.readBigUInt64LE(0);
+    if (!img) return false;
+    const wb = Buffer.alloc(4), hb = Buffer.alloc(4);
+    if (G.syms.GdipGetImageWidth(img, wb) !== 0 || G.syms.GdipGetImageHeight(img, hb) !== 0) return false;
+    const w = wb.readUInt32LE(0), h = hb.readUInt32LE(0);
+    if (w < 1 || h < 1) return false;
+    let nw = w, nh = h;
+    if (w > THUMB_EDGE || h > THUMB_EDGE) {
+      nw = w >= h ? THUMB_EDGE : Math.max(1, Math.round(w * THUMB_EDGE / h));
+      nh = w >= h ? Math.max(1, Math.round(h * THUMB_EDGE / w)) : THUMB_EDGE;
+    }
+    const dstOut = Buffer.alloc(8);
+    if (G.syms.GdipCreateBitmapFromScan0(nw, nh, 0, 0x26200A /* PixelFormat32bppARGB */, 0n, dstOut) !== 0) return false;
+    const dst = dstOut.readBigUInt64LE(0);
+    try {
+      const grOut = Buffer.alloc(8);
+      if (G.syms.GdipGetImageGraphicsContext(dst, grOut) !== 0) return false;
+      const gr = grOut.readBigUInt64LE(0);
+      try {
+        G.syms.GdipSetInterpolationMode(gr, 7 /* HighQualityBicubic */);
+        if (G.syms.GdipDrawImageRectRect(gr, img, 0, 0, nw, nh, 0, 0, w, h, 2 /* UnitPixel */, 0n, 0n, 0n) !== 0) return false;
+      } finally { G.syms.GdipDeleteGraphics(gr); }
+      const clsidJpeg = Buffer.from('01f47c55041ad3119a730000f81ef32e', 'hex');  // {557CF401-1A04-11D3-9A73-0000F81EF32E}
+      if (G.syms.GdipSaveImageToFile(dst, wstr(outFile), clsidJpeg, 0n) !== 0) return false;
+      return fs.existsSync(outFile);
+    } finally { G.syms.GdipDisposeImage(dst); }
+  } catch (e) {
+    return false;
+  } finally {
+    try { if (img && G) G.syms.GdipDisposeImage(img); } catch (e) {}
   }
 }
 
