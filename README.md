@@ -311,7 +311,16 @@ html-FileNest/
 
 ## Changelog
 
-**v2.2.2.0 (Latest)**
+**v2.2.2.1 (Latest)**
+
+  **Improvements**
+  - **Sharp, transparent file-type icons**: shortcut icons now inherit the Explorer icon at full jumbo resolution (256px transparent PNG) instead of a small bitmap — crisp at grid size and on high-DPI screens, with properly transparent backgrounds. The "New" menu type icons now show the real Explorer icon as well (previously blank on some systems), also with transparent backgrounds; icon tiles no longer sit on a gray plate.
+
+  **Fixes**
+  - Forced downloads of browser-active content (HTML / JS / XML / MHT) again keep the original file name (regression in v2.2.2.0).
+  - Restoring from the recycle bin revalidates the entry's original path against the currently allowed roots — an entry that now falls outside the roots stays in the recycle bin instead of being written out of bounds.
+
+**v2.2.2.0**
 
   **Security**
   - Windows device namespace paths (`\\.\` and `\\?\`) are now rejected at the path gate — raw device access such as `\\.\PhysicalDrive0` through the file APIs is impossible.
