@@ -1342,3 +1342,25 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    redistribute this software together with 7-Zip, you must comply with the
    GNU LGPL 2.1+ for the 7-Zip component.
 ================================================================================
+
+================================================================================
+9. Ghostscript 10.08.0 (optional, bundled as a separate program) - AGPL-3.0
+   https://www.ghostscript.com / https://github.com/ArtifexSoftware/ghostpdl-downloads
+
+   To render legacy PostScript/EPS previews, this software ships a minimal
+   Ghostscript distribution (gswin64c.exe, gsdll64.dll, Resource/ subset) that
+   is extracted on first use to <install-dir>\gs\ and invoked as an INDEPENDENT
+   PROCESS with -dSAFER. Ghostscript is NOT linked into this software; the two
+   programs are distributed together as separate works ("mere aggregation").
+
+   Ghostscript is free software licensed under the GNU Affero General Public
+   License v3 (AGPL-3.0). You may obtain its complete corresponding source
+   code from the official download site above (ghostpdl), or replace the
+   contents of <install-dir>\gs\ with any Ghostscript build of your choice.
+   The AGPL-3.0 applies to Ghostscript itself only.
+
+   This software works without Ghostscript too: when it is absent (or when
+   FIN_GS_PATH=off), PostScript/EPS rendering falls back to a clear
+   "open in Illustrator" notice and no Ghostscript code is executed.
+   FIN_GS_PATH may also point at a custom gswin64c.exe location.
+================================================================================

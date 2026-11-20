@@ -24,6 +24,20 @@ JS_BUNDLED = JS_BUNDLED.replace(
   JSON.stringify(NOTICES)
 );
 
+// 注入 Ghostscript 最小集 ZIP（base64；vendor/gs-min.zip 缺失时给空串，gs 渲染退化为本机探测）
+// vendor/gs-min.zip 不入库（.git/info/exclude），内容=gs/bin/{gswin64c.exe,gsdll64.dll}+gs/Resource/**
+let gsB64 = '';
+try {
+  gsB64 = readFileSync('./vendor/gs-min.zip').toString('base64');
+  console.log('GS payload: vendor/gs-min.zip ' + Math.round(gsB64.length / 1048576) + 'MB(base64)');
+} catch (e) {
+  console.log('GS payload: vendor/gs-min.zip 缺失，构建产物不带 Ghostscript');
+}
+JS_BUNDLED = JS_BUNDLED.replace(
+  '__EMBEDDED_GS_ZIP_B64__',
+  JSON.stringify(gsB64)
+);
+
 // 写临时文件编译
 const TMP = './src/_build_tmp.js';
 writeFileSync(TMP, JS_BUNDLED, 'utf8');
