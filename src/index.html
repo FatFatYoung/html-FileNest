@@ -493,6 +493,8 @@ body {
     "预览安全组件缺失，请使用新版 index.html": "Preview security component missing; please use a newer index.html",
     "PSD 缩略图预览（完整内容请用 Photoshop 打开）": "PSD thumbnail preview (open in Photoshop for full content)",
     "PSD 复合图像预览（图层内容请用 Photoshop 打开）": "PSD composite preview (open in Photoshop for layer content)",
+    "AI 预览图（完整内容请用 Illustrator 打开）": "AI preview (open in Illustrator for full content)",
+    "EPS 预览图（完整内容请用 Illustrator 打开）": "EPS preview (open in Illustrator for full content)",
     "无法读取: ": "Cannot read: ",
     "压缩包内文件 · {s} · 点击下载按钮获取": "File in archive · {s} · use the download button",
     "（此页无文本内容）": "(no text on this page)",
@@ -690,7 +692,7 @@ body {
       mp4:'🎬', mkv:'🎬', avi:'🎬', mov:'🎬', webm:'🎬', flv:'🎬',
       mp3:'🎵', wav:'🎵', flac:'🎵', m4a:'🎵', ogg:'🎵', aac:'🎵',
       pdf:'📕', doc:'📘', docx:'📘', xls:'📗', xlsx:'📗', ppt:'📙', pptx:'📙',
-      psd:'🎨', psb:'🎨', ai:'🎨',
+      psd:'🎨', psb:'🎨', ai:'🎨', eps:'🎨',
       zip:'📦', rar:'📦', '7z':'📦', tar:'📦', gz:'📦',
       exe:'⚙️', msi:'⚙️', dll:'⚙️', bat:'⚙️', cmd:'⚙️', ps1:'⚙️',
       py:'🐍', rb:'💎', go:'🔷', rs:'⚙️', java:'☕', c:'📘', h:'📘', cpp:'📘', hpp:'📘',
@@ -703,7 +705,7 @@ body {
   // 只加载"视线所在范围"（与列表视口相交的行）的缩略图；视线一动（滚动/resize/导航）
   // 立即终止在途+清队列，停住 200ms 后只加载新视口内的。每张就绪立刻只换这一行的图标。
   // 并发 3，提不出缩略图保留原图标不重试；导航代际变了在途结果全部丢弃。
-  var THUMB_EXTS = ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'ico', 'webp', 'avif', 'apng', 'heic', 'heif', 'psd', 'psb', 'ai', 'lnk'];
+  var THUMB_EXTS = ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'ico', 'webp', 'avif', 'apng', 'heic', 'heif', 'psd', 'psb', 'ai', 'eps', 'lnk'];
   var thumbQ = [], thumbActive = 0;
   var THUMB_INFLIGHT = [];   // 在途 Image 引用：视线移动/导航时主动取消下载
   var THUMB_CONC = 6;
@@ -1987,7 +1989,7 @@ body {
     var isAudio = ['mp3','wav','flac','m4a','ogg','aac'].indexOf(ext) >= 0;
     var isPdf   = ext === 'pdf';
     var isOffice = ['doc','docx','xls','xlsx','ppt','pptx'].indexOf(ext) >= 0;
-    var isDesign = ['psd','psb','ai'].indexOf(ext) >= 0;
+    var isDesign = ['psd','psb','ai','eps'].indexOf(ext) >= 0;
     // 放宽文本扩展名列表：常见文本/代码/配置扩展名均尝试文本预览
     var isText  = ['txt','text','md','markdown','json','json5','jsonc','js','mjs','cjs',
       'ts','jsx','tsx','html','htm','css','scss','less','xml','yml','yaml','toml','ini',
@@ -2121,7 +2123,7 @@ body {
           previewBodyEl.appendChild(img);
           var note = document.createElement('div');
           note.style.cssText = 'color:var(--text-2);font-size:11px;margin-top:6px;';
-          note.textContent = tr('PSD 缩略图预览（完整内容请用 Photoshop 打开）');
+          note.textContent = tr(r.note || 'PSD 缩略图预览（完整内容请用 Photoshop 打开）');
           previewBodyEl.appendChild(note);
         } else if (r.type === 'raw-image') {
           // PSD 复合图像：canvas 渲染
