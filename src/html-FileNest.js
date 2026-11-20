@@ -1062,53 +1062,78 @@ function listDrives(res) {
 
 // —— 网络共享盘：映射网络驱动器 + 连接过的 UNC 共享 + 活跃 SMB 连接（用户机器上的远程共享） ——
 let netCache = null, netCacheAt = 0;
-async function listNetShares() {
-  const now = Date.now();
-  if (netCache && now - netCacheAt < 600000) return netCache;   // 10 分钟缓存
-  const ps = '$out=@(); ' +
-    'foreach ($m in @(Get-SmbGlobalMapping -ErrorAction SilentlyContinue; Get-SmbMapping -ErrorAction SilentlyContinue)) { ' +
-    'if ($m.RemotePath) { $out += [PSCustomObject]@{ path=$m.RemotePath; letter=$m.LocalPath } } }; ' +
-    'foreach ($c in @(Get-SmbConnection -ErrorAction SilentlyContinue)) { ' +
-    'if ($c.ShareName) { $out += [PSCustomObject]@{ path=(\"\\\\\" + $c.ServerName + \"\\\" + $c.ShareName); letter=$null } } }; ' +
-    '$rk=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(\"Network\"); ' +
-    'if ($rk) { foreach ($n in $rk.GetSubKeyNames()) { $rp=$rk.OpenSubKey($n).GetValue(\"RemotePath\"); ' +
-    'if ($rp) { $out += [PSCustomObject]@{ path=$rp; letter=($n + \":\") } } }; $rk.Close() }; ' +
-    'foreach ($s in (Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match \"^S-1-5-21\" } | ForEach-Object { $_.PSChildName })) { ' +
-    '$mp=[Microsoft.Win32.Registry]::Users.OpenSubKey($s + \"\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\"); ' +
-    'if ($mp) { foreach ($n in $mp.GetSubKeyNames()) { if ($n.StartsWith(\"##\") -and -not $n.StartsWith(\"###\")) { ' +
-    '$out += [PSCustomObject]@{ path=(\"\\\\\" + $n.Substring(2).Replace(\"#\",\"\\\")); letter=$null } } }; $mp.Close() } }; ' +
-    '($out | Sort-Object path -Unique) | ConvertTo-Json -Compress';
+// 源分离（2026-11-20 网络盘符消失修复）：
+//   注册表源 = 纯离线毫秒级（HKCU/HKU 用户映射盘符 Network 键 + MountPoints2 连过的 UNC）；
+//   SMB 源 = Get-Smb* cmdlet（活跃连接/全局映射补充条目），可能被死端点拖住 15s+ 被强杀。
+// 两源各自独立超时：SMB 挂掉只丢补充条目，映射盘符不再被连坐清空；空结果不得覆盖非空缓存
+// （一次超时/被杀 ≠ 网络盘消失），失败 2 分钟后自动重试。
+const NET_PS_REGISTRY = '$out=@(); ' +
+  '$rk=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Network"); ' +
+  'if ($rk) { foreach ($n in $rk.GetSubKeyNames()) { $rp=$rk.OpenSubKey($n).GetValue("RemotePath"); ' +
+  'if ($rp) { $out += [PSCustomObject]@{ path=$rp; letter=($n + ":") } } }; $rk.Close() }; ' +
+  'foreach ($s in (Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match "^S-1-5-21" } | ForEach-Object { $_.PSChildName })) { ' +
+  '$nk=[Microsoft.Win32.Registry]::Users.OpenSubKey($s + "\\Network"); ' +
+  'if ($nk) { foreach ($n in $nk.GetSubKeyNames()) { $rp=$nk.OpenSubKey($n).GetValue("RemotePath"); ' +
+  'if ($rp) { $out += [PSCustomObject]@{ path=$rp; letter=($n + ":") } } }; $nk.Close() }; ' +
+  '$mp=[Microsoft.Win32.Registry]::Users.OpenSubKey($s + "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2"); ' +
+  'if ($mp) { foreach ($n in $mp.GetSubKeyNames()) { if ($n.StartsWith("##") -and -not $n.StartsWith("###")) { ' +
+  '$out += [PSCustomObject]@{ path=(([string][char]92+[string][char]92) + $n.Substring(2).Replace("#",[string][char]92)); letter=$null } } }; $mp.Close() } }; ' +
+  '($out | Sort-Object path -Unique) | ConvertTo-Json -Compress';
+const NET_PS_SMB = '$out=@(); ' +
+  'foreach ($m in @(Get-SmbGlobalMapping -ErrorAction SilentlyContinue; Get-SmbMapping -ErrorAction SilentlyContinue)) { ' +
+  'if ($m.RemotePath) { $out += [PSCustomObject]@{ path=$m.RemotePath; letter=$m.LocalPath } } }; ' +
+  'foreach ($c in @(Get-SmbConnection -ErrorAction SilentlyContinue)) { ' +
+  'if ($c.ShareName) { $out += [PSCustomObject]@{ path=(([string][char]92+[string][char]92) + $c.ServerName + [string][char]92 + $c.ShareName); letter=$null } } }; ' +
+  '($out | Sort-Object path -Unique) | ConvertTo-Json -Compress';
+// 单源执行：15s 强杀兜底（死映射/慢 NAS 会把 cmdlet 拖到分钟级）；返回 { ok, arr }，
+// ok=false = 被杀/进程失败/输出不可解析（此时 arr 恒空，不可当作"确实没有条目"）
+async function runNetPs(ps, timeoutMs) {
   try {
     const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
       { stdout: 'pipe', stderr: 'ignore' });
-    // 15s 强杀兜底：断开的 SMB 映射/慢 NAS 会让 Get-SmbConnection 阻塞等网络超时，
-    // 无超时的 PowerShell 枚举能把 /api/drives 拖到分钟级
-    const killTimer = setTimeout(() => { try { proc.kill(); } catch (e) {} }, 15000);
+    let killed = false;
+    const killTimer = setTimeout(() => { killed = true; try { proc.kill(); } catch (e) {} }, timeoutMs);
     const out = await new Response(proc.stdout).text();
-    await proc.exited;
+    const code = await proc.exited;
     clearTimeout(killTimer);
-    let arr = [];
-    try { const j = JSON.parse(out.trim() || '[]'); arr = Array.isArray(j) ? j : [j]; } catch { }
-    // —— 通用归一规则（产品级，不针对任何具体主机/机器） ——
-    // 所有网络共享条目一律收敛到主机根：任何 \\host\share\... 深度的路径
-    // （映射盘符 / UNC 记录 / 活跃 SMB 连接，任何主机、任何深度）统一归一为 \\host，
-    // 与 C:\ D:\ 同级呈现；映射盘符保留盘符作为入口，点击仍进盘根（2026-11-13 用户指示）
-    const toHostRoot = (p) => {
-      const s = String(p);
-      if (s.startsWith('\\\\')) {
-        const host = s.slice(2).split('\\')[0];
-        if (host) return '\\\\' + host;
-      }
-      return s;
-    };
-  netCache = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
+    try {
+      const j = JSON.parse(out.trim() || '[]');
+      return { ok: !killed && code === 0, arr: Array.isArray(j) ? j : [j] };
+    } catch (e) { return { ok: false, arr: [] }; }
+  } catch (e) { return { ok: false, arr: [] }; }
+}
+async function refreshNetShares() {
+  const [reg, smb] = await Promise.all([
+    runNetPs(NET_PS_REGISTRY, 15000),
+    runNetPs(NET_PS_SMB, 15000),
+  ]);
+  const arr = reg.arr.concat(smb.arr);
+  // —— 通用归一规则（产品级，不针对任何具体主机/机器） ——
+  // 所有网络共享条目一律收敛到主机根：任何 \\host\share\... 深度的路径
+  // （映射盘符 / UNC 记录 / 活跃 SMB 连接，任何主机、任何深度）统一归一为 \\host，
+  // 与 C:\ D:\ 同级呈现；映射盘符保留盘符作为入口，点击仍进盘根（2026-11-13 用户指示）
+  const toHostRoot = (p) => {
+    const s = String(p);
+    if (s.startsWith('\\\\')) {
+      const host = s.slice(2).split('\\')[0];
+      if (host) return '\\\\' + host;
+    }
+    return s;
+  };
+  const list = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
     .map(x => ({ path: toHostRoot(x.path), letter: x.letter || null }))
     .filter((x, i, a) => a.findIndex(y => (y.letter || '') === (x.letter || '') && y.path.toLowerCase() === x.path.toLowerCase()) === i);
-  } catch (e) {
-    netCache = netCache || [];   // 失败/超时也缓存（10 分钟内不重试），防反复卡（2026-11-16）
-  }
-  netCacheAt = now;
+  const cleanRun = reg.ok && smb.ok;   // 两源都完整跑完才算"确实没有条目"
+  if (list.length || cleanRun || !netCache) netCache = list;
+  // 降级运行（有源被杀/失败且没拿到条目）：2 分钟后就重试，不等满 10 分钟
+  netCacheAt = cleanRun || list.length ? Date.now() : Date.now() - 480000;
   return netCache;
+}
+async function listNetShares() {
+  const now = Date.now();
+  if (netCache && now - netCacheAt < 600000) return netCache;   // 10 分钟缓存
+  if (netCache) { refreshNetShares().catch(() => {}); return netCache; }  // 过期旧值先顶上，后台静默刷新（防首页卡 15s）
+  return refreshNetShares();
 }
 
 // —— 桌面集成（所有位置页的桌面模块）——
