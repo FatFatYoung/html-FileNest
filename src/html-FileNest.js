@@ -2371,19 +2371,32 @@ function scanFirstJpeg(buf) {
   return null;
 }
 
-// DOS EPS 二进制头：magic(4)=C5 D3 D6 C6 + 5 组 uint32 偏移/长度 + uint16 校验，
-// TIFF 预览偏移/长度在第 20~27 字节；字节序双向验证（TIFF 魔数 II*/MM* 对得上才算）
-function extractEpsTiff(head) {
+// DOS EPS 二进制头：magic(4)=C5 D0 D3 C6 + 5 组 uint32 偏移/长度 + uint16 校验，
+// TIFF 预览偏移/长度在第 20~27 字节；字节序双向验证（TIFF 魔数 II*/MM* 对得上才算）。
+// file 可选：TIFF 落在 head 之外（大 EPS 头只读 4MB）时按需范围读，防真文件提取断链
+function extractEpsTiff(head, file) {
   if (head.length < 30) return null;
-  if (!(head[0] === 0xC5 && head[1] === 0xD3 && head[2] === 0xD6 && head[3] === 0xC6)) return null;
+  if (!(head[0] === 0xC5 && head[1] === 0xD0 && head[2] === 0xD3 && head[3] === 0xC6)) return null;
   for (const be of [true, false]) {
     const off = be ? head.readUInt32BE(20) : head.readUInt32LE(20);
     const len = be ? head.readUInt32BE(24) : head.readUInt32LE(24);
-    if (off <= 0 || len <= 24 || off + len > head.length) continue;
-    const sig = head.subarray(off, off + 4);
+    if (off <= 0 || len <= 24 || len > 20 * 1048576) continue;
+    let tif;
+    if (off + len <= head.length) tif = head.subarray(off, off + len);
+    else if (file) {
+      try {
+        const fd = fs.openSync(file, 'r');
+        const b = Buffer.alloc(len);
+        const n = fs.readSync(fd, b, 0, len, off);
+        fs.closeSync(fd);
+        if (n === len) tif = b;
+      } catch (e) {}
+    }
+    if (!tif) continue;
+    const sig = tif.subarray(0, 4);
     const tiff = (sig[0] === 0x49 && sig[1] === 0x49 && sig[2] === 0x2A && sig[3] === 0x00) ||
                  (sig[0] === 0x4D && sig[1] === 0x4D && sig[2] === 0x00 && sig[3] === 0x2A);
-    if (tiff) return head.subarray(off, off + len);
+    if (tiff) return tif;
   }
   return null;
 }
@@ -2664,7 +2677,7 @@ async function thumbFile(res, q, cfg) {
   // 现代 AI（%!PS 文本头）的 PDF 兼容段贴在文件尾部，所以扫描分头/尾两段；
   // .eps 与 .ai 同族（Illustrator 导出 EPS 同样带 DOS EPS TIFF 预览、EPSI 预览或 PDF 兼容段）
   if (ext === '.ai' || ext === '.eps') {
-    const tif = extractEpsTiff(head);
+    const tif = extractEpsTiff(head, file);
     if (tif && tif.length < 20 * 1048576) {
       const tifTmp = path.join(tdir, key + '.tif');
       fs.writeFileSync(tifTmp, tif);
@@ -2800,7 +2813,7 @@ async function officePreview(res, q, cfg) {
       try { pv = fs.readFileSync(pvJpg); } catch (e) { pv = null; }
     } else {
       // ① DOS EPS 二进制头 TIFF 预览（Illustrator 8 及更早/导出 EPS 常见）
-      const tif = extractEpsTiff(buf);
+      const tif = extractEpsTiff(buf, zipSep > 0 ? null : file);
       if (tif && tif.length < 20 * 1048576) pv = await transcodePv(tif, '.pv.tif');
     }
     if (pv && pv.length) return showPv();
