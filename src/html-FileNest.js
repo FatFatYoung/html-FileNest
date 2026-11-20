@@ -645,6 +645,9 @@ const UI_HTML_DEPLOY = __EMBEDDED_UI_HTML__;
 // ★ 第三方开源许可全文（嵌入 exe，--licenses 可随时查看）
 const THIRD_PARTY_NOTICES = __EMBEDDED_NOTICES__;
 
+// ★ Ghostscript 最小集 ZIP（base64，构建期注入）：首次渲染 EPS 时解包到 INSTALL_DIR\gs\
+const EMBEDDED_GS_ZIP_B64 = __EMBEDDED_GS_ZIP_B64__;
+
 let _uiCache = null, _uiMtime = 0, _uiPath = null;
 function loadUI() {
   const f = findUIFile();
@@ -2680,6 +2683,85 @@ async function pdfFallback(srcFile, outPng) {
   } catch (e) { return false; }
 }
 
+// —— Ghostscript（AGPL，独立进程、-dSAFER 沙箱、30s 强杀；聚合作用分发，许可随包）——
+// 探测链：FIN_GS_PATH 显式路径（off=禁用）→ INSTALL_DIR\gs → exe 旁 gs\ → PATH → Program Files\gs
+let _gsExeCache;
+function findGsExe() {
+  if (_gsExeCache !== undefined) return _gsExeCache;
+  _gsExeCache = null;
+  const env = process.env.FIN_GS_PATH;
+  if (env === 'off' || env === '0') return null;
+  if (env && env !== 'auto') {
+    try { if (fs.existsSync(env)) return (_gsExeCache = env); } catch (_) {}
+  }
+  const cands = [path.join(INSTALL_DIR, 'gs', 'bin', 'gswin64c.exe')];
+  if (SELF_DIR) cands.push(path.join(SELF_DIR, 'gs', 'bin', 'gswin64c.exe'));
+  for (const p of cands) { try { if (fs.existsSync(p)) return (_gsExeCache = p); } catch (_) {} }
+  try {
+    const r = spawnSync('where', ['gswin64c'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
+    const line = String(r.stdout || '').split(/\r?\n/).map(s => s.trim()).find(s => /gswin64c\.exe$/i.test(s));
+    if (line && fs.existsSync(line)) return (_gsExeCache = line);
+  } catch (_) {}
+  try {
+    for (const base of ['C:\\Program Files\\gs', 'C:\\Program Files (x86)\\gs']) {
+      if (!fs.existsSync(base)) continue;
+      for (const d of fs.readdirSync(base).sort().reverse()) {
+        const p = path.join(base, d, 'bin', 'gswin64c.exe');
+        if (fs.existsSync(p)) return (_gsExeCache = p);
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+// 嵌入的 gs-min.zip 首次解包到 INSTALL_DIR\gs（一次性，之后走探测缓存）
+async function ensureGs() {
+  let exe = findGsExe();
+  if (exe) return exe;
+  if (typeof EMBEDDED_GS_ZIP_B64 !== 'string' || EMBEDDED_GS_ZIP_B64.length < 64) return null;
+  try {
+    const zip = await JSZip.loadAsync(Buffer.from(EMBEDDED_GS_ZIP_B64, 'base64'));
+    const dest = path.join(INSTALL_DIR, 'gs');
+    for (const [name, entry] of Object.entries(zip.files)) {
+      if (entry.dir) continue;
+      // 条目形如 gs/bin/x、gs/Resource/y：剥掉 gs/ 前缀落到 INSTALL_DIR\gs\
+      const rel = name.replace(/\//g, path.sep).replace(/^gs[\\\/]/, '');
+      const out = path.join(dest, rel);
+      const dir = path.dirname(out);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(out, Buffer.from(await entry.async('uint8array')));
+    }
+    _gsExeCache = undefined;
+    return findGsExe();
+  } catch (e) { return null; }
+}
+
+// Ghostscript 渲染 EPS/PS 首页 → PNG。targetEdge=目标长边像素（按 %%BoundingBox 自适应 -r）。
+async function gsFallback(srcFile, outPng, targetEdge) {
+  const exe = await ensureGs();
+  if (!exe) return false;
+  let r = 150;
+  try {
+    const head = readHead(srcFile, 256 * 1024).toString('latin1');
+    const m = /%%BoundingBox:\s*(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/.exec(head);
+    if (m) {
+      const w = Math.max(1, +m[3] - +m[1]), h = Math.max(1, +m[4] - +m[2]);
+      r = Math.min(600, Math.max(36, Math.round(72 * (targetEdge || 1200) / Math.max(w, h))));
+    }
+  } catch (e) {}
+  try {
+    const proc = Bun.spawn([exe, '-dSAFER', '-dNOPAUSE', '-dBATCH', '-dEPSCrop', '-sDEVICE=png16m',
+      '-dGraphicsAlphaBits=4', '-dTextAlphaBits=4', '-r' + r, '-sOutputFile=' + outPng, String(srcFile)],
+      { stdout: 'ignore', stderr: 'ignore', windowsHide: true });
+    const killTimer = setTimeout(() => { try { proc.kill(); } catch (e) {} }, 30000);
+    const code = await proc.exited;
+    clearTimeout(killTimer);
+    if (code !== 0 || !fs.existsSync(outPng)) return false;
+    const h = fs.readFileSync(outPng);
+    return h.length >= 24 && h[0] === 0x89 && h[1] === 0x50 && h[2] === 0x4E && h[3] === 0x47;
+  } catch (e) { return false; }
+}
+
 function sendImageFile(res, file, mime, extra) {
   const buf = fs.readFileSync(file);
   res.writeHead(200, Object.assign({
@@ -2801,6 +2883,16 @@ async function thumbFile(res, q, cfg) {
         ok = await gdiThumb(pdfTmp, outFile);
       }
       try { fs.unlinkSync(pdfTmp); } catch (e) {}
+      if (ok) return sendImageFile(res, outFile, 'image/jpeg');
+    }
+    // 六级：%!PS 纯 PostScript → Ghostscript 渲染（AGPL 独立进程；无 gs 维持 404）
+    if (head.length >= 2 && head[0] === 0x25 && head[1] === 0x21) {
+      const gsTmp = path.join(tdir, key + '.pv.gs.png');
+      let ok = false;
+      if (await gsFallback(file, gsTmp, 512)) {
+        ok = await gdiThumb(gsTmp, outFile);
+      }
+      try { fs.unlinkSync(gsTmp); } catch (e) {}
       if (ok) return sendImageFile(res, outFile, 'image/jpeg');
     }
     return sendJson(res, 404, { ok: false, error: 'no embedded preview' });
@@ -2960,8 +3052,19 @@ async function officePreview(res, q, cfg) {
     }
     if (pv && pv.length) return showPv();
 
-    // ④ %!PS-Adobe 头：旧版 PostScript 且无任何可提取预览
+    // ④ %!PS-Adobe 头：Ghostscript 渲染（AGPL 独立进程）；无 gs 维持明确提示
     if (buf.length >= 2 && buf[0] === 0x25 && buf[1] === 0x21) {
+      const gsSrc = path.join(tdir, ckey + '.pv.gs.src');
+      const gsTmp = path.join(tdir, ckey + '.pv.gs.png');
+      let ok = false;
+      try {
+        fs.writeFileSync(gsSrc, buf);
+        ok = await gsFallback(gsSrc, gsTmp, 1200);
+        if (ok) ok = await gdiThumb(gsTmp, pvJpg, 1024);
+      } catch (e) {}
+      try { fs.unlinkSync(gsSrc); } catch (e) {}
+      try { fs.unlinkSync(gsTmp); } catch (e) {}
+      if (ok && fs.existsSync(pvJpg)) { pv = fs.readFileSync(pvJpg); return showPv(); }
       return sendJson(res, 200, { ok: true, type: 'fallback', message: (ext === '.eps' ? 'PostScript 格式 EPS 文件，需用 Illustrator 打开' : 'PostScript 格式 AI 文件，需用 Illustrator 打开'), ext });
     }
     // 未知格式：尝试按 PSD 处理（某些 AI 可能内嵌 PSD 数据）
