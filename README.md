@@ -315,6 +315,7 @@ html-FileNest/
 
   **Improvements**
   - **Sharp, transparent file-type icons**: shortcut icons now inherit the Explorer icon at full jumbo resolution (256px transparent PNG) instead of a small bitmap — crisp at grid size and on high-DPI screens, with properly transparent backgrounds. The "New" menu type icons now show the real Explorer icon as well (previously blank on some systems), also with transparent backgrounds; icon tiles no longer sit on a gray plate.
+  - **EPS files now preview and thumbnail like AI files**: `.eps` files extract whatever preview the file carries — a DOS EPS TIFF preview, a PDF-compatible segment, an embedded JPEG, or an EPSI ASCII preview (the classic `%%BeginPreview` block) — for both list thumbnails and the preview pane. Files without any extractable preview keep a clear "open in Illustrator" note instead of failing silently.
 
   **Fixes**
   - Forced downloads of browser-active content (HTML / JS / XML / MHT) again keep the original file name (regression in v2.2.2.0).
