@@ -2183,6 +2183,65 @@ function readTail(file, n, size) {
   } finally { try { fs.closeSync(fd); } catch (e) {} }
 }
 
+// EPSI ASCII 预览（Adobe TN 5002 / Ghostscript ps2epsi 生成器同源语义）：
+// %%BeginPreview: 宽 高 位深 行数，随后行数条 % 开头 hex 注释行（每行 ≤40 字节、行内无填充、
+// 行序自顶向下，行间字节连续）；极性 0=白、最大值=黑（ps2epsi 注释 "EPSI 00 is white"）。
+// 位深 1/2/4/8 灰阶、24=RGB。解码成 RGBA 返回 { rgba, w, h }，解析失败/数据不足返回 null。
+function extractEpsiPreview(buf) {
+  const winLen = Math.min(buf.length, 16 * 1048576);
+  const win = buf.subarray(0, winLen).toString('latin1');
+  const m = /%%BeginPreview:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/.exec(win);
+  if (!m) return null;
+  const w = +m[1], h = +m[2], depth = +m[3], lines = +m[4];
+  if (!(w >= 1 && h >= 1 && w <= 8192 && h <= 8192 && lines >= 1 && lines <= 400000)) return null;
+  if (depth !== 1 && depth !== 2 && depth !== 4 && depth !== 8 && depth !== 24) return null;
+  const rowBytes = depth === 24 ? w * 3 : Math.ceil(w * depth / 8);
+  const need = rowBytes * h;
+  if (need > 32 * 1048576) return null;
+  // 逐行收 hex（顺带丢 %、空白、CR），凑满 need 字节；先跳过表头行尾，第一圈才开始收数据行
+  const data = Buffer.alloc(need);
+  let got = 0, nib = -1;
+  let pos = m.index + m[0].length;
+  const firstEol = win.indexOf('\n', pos);
+  if (firstEol < 0) return null;
+  pos = firstEol + 1;
+  for (let n = 0; n < lines && got < need; n++) {
+    let eol = win.indexOf('\n', pos);
+    if (eol < 0) eol = winLen;
+    for (let i = pos; i < eol && got < need; i++) {
+      const c = win.charCodeAt(i);
+      const v = c >= 48 && c <= 57 ? c - 48 : c >= 65 && c <= 70 ? c - 55 : c >= 97 && c <= 102 ? c - 87 : -1;
+      if (v < 0) continue;
+      if (nib < 0) nib = v;
+      else { data[got++] = (nib << 4) | v; nib = -1; }
+    }
+    pos = eol + 1;
+  }
+  if (got < need) return null;
+  const rgba = Buffer.alloc(w * h * 4, 255);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      if (depth === 24) {
+        const p = y * rowBytes + x * 3;
+        rgba[o] = 255 - data[p];
+        rgba[o + 1] = 255 - data[p + 1];
+        rgba[o + 2] = 255 - data[p + 2];
+      } else if (depth === 8) {
+        rgba[o] = rgba[o + 1] = rgba[o + 2] = 255 - data[y * rowBytes + x];
+      } else {
+        const per = 8 / depth;
+        const b = data[y * rowBytes + Math.floor(x / per)];
+        const shift = 8 - depth * ((x % per) + 1);
+        const v = (b >> shift) & ((1 << depth) - 1);
+        const g = 255 - Math.round(v * 255 / ((1 << depth) - 1));
+        rgba[o] = rgba[o + 1] = rgba[o + 2] = g;
+      }
+    }
+  }
+  return { rgba, w, h };
+}
+
 // 扫描内嵌 JPEG（SOI..EOI）；小于 1KB 的碎片（图标噪声）跳过继续找
 function scanFirstJpeg(buf) {
   const sig = Buffer.from([0xFF, 0xD8, 0xFF]);
@@ -2359,10 +2418,10 @@ async function gdiThumb(srcFile, outFile, edge) {
   }
 }
 
-// raw 像素直喂（PSD raw RGB / 合成图桥接，免 BMP 转码）；RGBA 顶行在前
-async function gdiThumbRgba(rgba, w, h, outFile) {
+// raw 像素直喂（PSD raw RGB / 合成图桥接 / EPSI 位图，免 BMP 转码）；RGBA 顶行在前
+async function gdiThumbRgba(rgba, w, h, outFile, edge) {
   try {
-    await writeThumbJpeg(new Jimp({ data: Buffer.from(rgba), width: w, height: h }), outFile);
+    await writeThumbJpeg(new Jimp({ data: Buffer.from(rgba), width: w, height: h }), outFile, edge);
     return true;
   } catch (e) { return false; }
 }
@@ -2490,9 +2549,9 @@ async function thumbFile(res, q, cfg) {
     return sendJson(res, 404, { ok: false, error: 'no embedded thumbnail' });
   }
 
-  // AI/EPS 三级兜底：DOS EPS 头 TIFF 预览 → PDF 兼容段内嵌 JPEG → 全文扫 JPEG
+  // AI/EPS 四级兜底：DOS EPS 头 TIFF 预览 → PDF 兼容段内嵌 JPEG → 全文扫 JPEG → EPSI ASCII 位图
   // 现代 AI（%!PS 文本头）的 PDF 兼容段贴在文件尾部，所以扫描分头/尾两段；
-  // .eps 与 .ai 同族（Illustrator 导出 EPS 同样带 DOS EPS TIFF 预览或 PDF 兼容段）
+  // .eps 与 .ai 同族（Illustrator 导出 EPS 同样带 DOS EPS TIFF 预览、EPSI 预览或 PDF 兼容段）
   if (ext === '.ai' || ext === '.eps') {
     const tif = extractEpsTiff(head);
     if (tif && tif.length < 20 * 1048576) {
@@ -2508,6 +2567,11 @@ async function thumbFile(res, q, cfg) {
     for (const b of scanBufs) {
       const jpg = scanFirstJpeg(b);
       if (jpg) { fs.writeFileSync(outFile, jpg); return sendImageFile(res, outFile, 'image/jpeg'); }
+    }
+    // 四级：EPSI ASCII 预览（%%BeginPreview 注释块；0=白 最大值=黑，ps2epsi 同源约定）
+    for (const b of scanBufs) {
+      const epsi = extractEpsiPreview(b);
+      if (epsi && await gdiThumbRgba(epsi.rgba, epsi.w, epsi.h, outFile)) return sendImageFile(res, outFile, 'image/jpeg');
     }
     return sendJson(res, 404, { ok: false, error: 'no embedded preview' });
   }
@@ -2598,41 +2662,60 @@ async function officePreview(res, q, cfg) {
     }
   }
 
-  // —— AI / EPS 文件：DOS EPS TIFF 预览 → PDF 兼容型 PDF 预览 → 旧版 PostScript 提示 ——
+  // —— AI / EPS 文件：预览 = DOS EPS TIFF → PDF 兼容 iframe → 内嵌 JPEG / EPSI 位图 → 提示 ——
   if (ext === '.ai' || ext === '.eps') {
-    // DOS EPS 二进制头（Illustrator 8 及更早/导出 EPS 常见）：取 TIFF 预览转 JPEG 展示（结果缓存）
-    const tif = extractEpsTiff(buf);
-    if (tif && tif.length < 20 * 1048576) {
-      const tdir = path.join(cfg.cacheDir, 'thumbs');
-      if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
-      const ckey = crypto.createHash('sha1').update(String(q.path) + '|' + buf.length).digest('hex').slice(0, 20);
-      const pvJpg = path.join(tdir, ckey + '.pv.jpg');
-      const tifTmp = path.join(tdir, ckey + '.pv.tif');
-      let pv = null;
-      if (fs.existsSync(pvJpg)) {
-        try { pv = fs.readFileSync(pvJpg); } catch (e) { pv = null; }
-      } else {
-        try {
-          fs.writeFileSync(tifTmp, tif);
-          if (await gdiThumb(tifTmp, pvJpg, 1024) && fs.existsSync(pvJpg)) pv = fs.readFileSync(pvJpg);
-        } catch (e) {}
-        try { fs.unlinkSync(tifTmp); } catch (e) {}
-      }
-      if (pv && pv.length) {
-        return sendJson(res, 200, {
-          ok: true, type: 'image',
-          dataUrl: 'data:image/jpeg;base64,' + pv.toString('base64'),
-          note: ext === '.eps' ? 'EPS 预览图（完整内容请用 Illustrator 打开）' : 'AI 预览图（完整内容请用 Illustrator 打开）',
-          ext
-        });
-      }
+    const tdir = path.join(cfg.cacheDir, 'thumbs');
+    if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
+    const ckey = crypto.createHash('sha1').update(String(q.path) + '|' + buf.length).digest('hex').slice(0, 20);
+    const pvJpg = path.join(tdir, ckey + '.pv.jpg');
+    const note = ext === '.eps' ? 'EPS 预览图（完整内容请用 Illustrator 打开）' : 'AI 预览图（完整内容请用 Illustrator 打开）';
+    const showPv = () => sendJson(res, 200, {
+      ok: true, type: 'image',
+      dataUrl: 'data:image/jpeg;base64,' + pv.toString('base64'),
+      note, ext
+    });
+    // 源文件字节 → 转 JPEG（edge=1024）缓存 .pv.jpg
+    const transcodePv = async (bytes, suffix) => {
+      const srcTmp = path.join(tdir, ckey + suffix);
+      try {
+        fs.writeFileSync(srcTmp, bytes);
+        if (await gdiThumb(srcTmp, pvJpg, 1024) && fs.existsSync(pvJpg)) return fs.readFileSync(pvJpg);
+      } catch (e) {}
+      try { fs.unlinkSync(srcTmp); } catch (e) {}
+      return null;
+    };
+    let pv = null;
+    if (fs.existsSync(pvJpg)) {
+      try { pv = fs.readFileSync(pvJpg); } catch (e) { pv = null; }
+    } else {
+      // ① DOS EPS 二进制头 TIFF 预览（Illustrator 8 及更早/导出 EPS 常见）
+      const tif = extractEpsTiff(buf);
+      if (tif && tif.length < 20 * 1048576) pv = await transcodePv(tif, '.pv.tif');
     }
+    if (pv && pv.length) return showPv();
+
+    // ② %PDF- 头：PDF 兼容 AI/EPS，返回 pdf 标记让前端用 iframe 预览（整页渲染优于内嵌图，先判）
     if (buf.length >= 5 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46 && buf[4] === 0x2D) {
-      // %PDF- 头：PDF 兼容 AI/EPS，返回 pdf 标记让前端用 iframe 预览
       return sendJson(res, 200, { ok: true, type: 'pdf', ext });
     }
+
+    // ③ 内嵌 JPEG 扫描 → EPSI ASCII 位图（0=白 最大值=黑）
+    {
+      const jpg = scanFirstJpeg(buf);
+      if (jpg) pv = await transcodePv(jpg, '.pv.src.jpg');
+      if (!pv) {
+        const epsi = extractEpsiPreview(buf);
+        if (epsi) {
+          try {
+            if (await gdiThumbRgba(epsi.rgba, epsi.w, epsi.h, pvJpg, 1024) && fs.existsSync(pvJpg)) pv = fs.readFileSync(pvJpg);
+          } catch (e) {}
+        }
+      }
+    }
+    if (pv && pv.length) return showPv();
+
+    // ④ %!PS-Adobe 头：旧版 PostScript 且无任何可提取预览
     if (buf.length >= 2 && buf[0] === 0x25 && buf[1] === 0x21) {
-      // %!PS-Adobe 头：旧版 PostScript，无法网页预览
       return sendJson(res, 200, { ok: true, type: 'fallback', message: (ext === '.eps' ? 'PostScript 格式 EPS 文件，需用 Illustrator 打开' : 'PostScript 格式 AI 文件，需用 Illustrator 打开'), ext });
     }
     // 未知格式：尝试按 PSD 处理（某些 AI 可能内嵌 PSD 数据）
