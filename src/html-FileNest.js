@@ -1060,54 +1060,107 @@ function listDrives(res) {
     .catch(() => sendJson(res, 200, { ok: true, drives, net: [] }));
 }
 
-// —— 网络共享盘：映射网络驱动器 + 连接过的 UNC 共享 + 活跃 SMB 连接（用户机器上的远程共享） ——
+// —— 网络共享盘：映射网络驱动器 + 连接过的 UNC 共享（用户机器上的远程共享） ——
 let netCache = null, netCacheAt = 0;
-// 源分离（2026-11-20 网络盘符消失修复）：
-//   注册表源 = 纯离线毫秒级（HKCU/HKU 用户映射盘符 Network 键 + MountPoints2 连过的 UNC）；
-//   SMB 源 = Get-Smb* cmdlet（活跃连接/全局映射补充条目），可能被死端点拖住 15s+ 被强杀。
-// 两源各自独立超时：SMB 挂掉只丢补充条目，映射盘符不再被连坐清空；空结果不得覆盖非空缓存
-// （一次超时/被杀 ≠ 网络盘消失），失败 2 分钟后自动重试。
-const NET_PS_REGISTRY = '$out=@(); ' +
-  '$rk=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Network"); ' +
-  'if ($rk) { foreach ($n in $rk.GetSubKeyNames()) { $rp=$rk.OpenSubKey($n).GetValue("RemotePath"); ' +
-  'if ($rp) { $out += [PSCustomObject]@{ path=$rp; letter=($n + ":") } } }; $rk.Close() }; ' +
-  'foreach ($s in (Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match "^S-1-5-21" } | ForEach-Object { $_.PSChildName })) { ' +
-  '$nk=[Microsoft.Win32.Registry]::Users.OpenSubKey($s + "\\Network"); ' +
-  'if ($nk) { foreach ($n in $nk.GetSubKeyNames()) { $rp=$nk.OpenSubKey($n).GetValue("RemotePath"); ' +
-  'if ($rp) { $out += [PSCustomObject]@{ path=$rp; letter=($n + ":") } } }; $nk.Close() }; ' +
-  '$mp=[Microsoft.Win32.Registry]::Users.OpenSubKey($s + "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2"); ' +
-  'if ($mp) { foreach ($n in $mp.GetSubKeyNames()) { if ($n.StartsWith("##") -and -not $n.StartsWith("###")) { ' +
-  '$out += [PSCustomObject]@{ path=(([string][char]92+[string][char]92) + $n.Substring(2).Replace("#",[string][char]92)); letter=$null } } }; $mp.Close() } }; ' +
-  '($out | Sort-Object path -Unique) | ConvertTo-Json -Compress';
-const NET_PS_SMB = '$out=@(); ' +
-  'foreach ($m in @(Get-SmbGlobalMapping -ErrorAction SilentlyContinue; Get-SmbMapping -ErrorAction SilentlyContinue)) { ' +
-  'if ($m.RemotePath) { $out += [PSCustomObject]@{ path=$m.RemotePath; letter=$m.LocalPath } } }; ' +
-  'foreach ($c in @(Get-SmbConnection -ErrorAction SilentlyContinue)) { ' +
-  'if ($c.ShareName) { $out += [PSCustomObject]@{ path=(([string][char]92+[string][char]92) + $c.ServerName + [string][char]92 + $c.ShareName); letter=$null } } }; ' +
-  '($out | Sort-Object path -Unique) | ConvertTo-Json -Compress';
-// 单源执行：15s 强杀兜底（死映射/慢 NAS 会把 cmdlet 拖到分钟级）；返回 { ok, arr }，
-// ok=false = 被杀/进程失败/输出不可解析（此时 arr 恒空，不可当作"确实没有条目"）
-async function runNetPs(ps, timeoutMs) {
+// 零 PowerShell 枚举（2026-11-20 网络盘符消失根因修复）：
+//   此前枚举走 PowerShell（冷启动秒级 + PS 损坏环境不可用），15s 被强杀后空结果写缓存，
+//   首页网络条目消失 10 分钟——同一台机器换版本"时好时坏"的真正根因（与版本 diff 无关，
+//   取决于服务启动那一刻 PS 枚举的成败）。现改走 reg.exe / net.exe（系统自带、毫秒级、
+//   无冷启动无 JIT、不依赖 .NET），PS 冷启动/繁忙/损坏均不可再影响枚举。三源并集：
+//   ① HKCU/HKU 用户 Network 键（映射盘符 letter+path）② MountPoints2（连过的 UNC）
+//   ③ net use（现役映射，含非持久映射）。各源独立 8s 超时；空结果不得覆盖非空缓存
+//   （一次超时/被杀 ≠ 网络盘消失），失败 2 分钟后自动重试；首查不阻塞首页（SWR 旧值先顶）。
+async function runTool(args, timeoutMs) {
+  // 返回解码后 stdout；超时强杀/进程失败/非零退出 = null（该源失败，不等于"确实没有条目"）
   try {
-    const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
-      { stdout: 'pipe', stderr: 'ignore' });
+    const proc = Bun.spawn(args, { stdout: 'pipe', stderr: 'ignore' });
     let killed = false;
     const killTimer = setTimeout(() => { killed = true; try { proc.kill(); } catch (e) {} }, timeoutMs);
     const out = await new Response(proc.stdout).text();
     const code = await proc.exited;
     clearTimeout(killTimer);
-    try {
-      const j = JSON.parse(out.trim() || '[]');
-      return { ok: !killed && code === 0, arr: Array.isArray(j) ? j : [j] };
-    } catch (e) { return { ok: false, arr: [] }; }
-  } catch (e) { return { ok: false, arr: [] }; }
+    return killed || code !== 0 ? null : out;
+  } catch (e) { return null; }
+}
+function parseRegNetwork(text) {
+  // reg query <Network 键> /s /v RemotePath：KEY 行 + "    RemotePath    REG_SZ    \\host\share"
+  const out = [];
+  let key = '';
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim();
+    if (/^HKEY_/i.test(t)) { key = t; continue; }
+    const m = line.match(/^\s*RemotePath\s+REG_\w+\s+(.+?)\s*$/i);
+    if (m && m[1] && m[1].startsWith('\\\\')) {
+      const letter = key.split('\\').pop();
+      if (/^[A-Za-z]$/.test(letter)) out.push({ path: m[1], letter: letter + ':' });
+    }
+  }
+  return out;
+}
+function parseRegMounts(text, prefix) {
+  // reg query <MountPoints2 键>（一层子键）：##host#share / ##host → \\host[/share]；十六进制键名 → UTF-16 解码
+  const out = [];
+  const pre = String(prefix).toLowerCase();
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim();
+    if (!/^HKEY_/i.test(t)) continue;
+    const i = t.toLowerCase().indexOf(pre);
+    if (i < 0) continue;
+    let name = t.slice(i + pre.length);
+    if (name.startsWith('\\')) name = name.slice(1);   // 剥 KEY\子键 的分隔反斜杠
+    if (!name || name.includes('\\')) continue;   // 只取一层子键
+    if (name.startsWith('###')) continue;
+    let p = null;
+    if (name.startsWith('##')) p = '\\\\' + name.slice(2).replace(/#/g, '\\');
+    else if (/^[0-9a-fA-F]+$/.test(name) && name.length % 4 === 0) {
+      try {
+        const s = Buffer.from(name, 'hex').toString('utf16le');
+        if (s.startsWith('\\\\')) p = s;
+      } catch (e) {}
+    }
+    if (p) out.push({ path: p, letter: null });
+  }
+  return out;
+}
+function parseNetUse(text) {
+  // net use 行（多语言环境）："状态  X:  \\host\share  ..."，按 盘符+UNC 模式匹配，天然跳过表头/分隔线
+  const out = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const m = line.match(/^\s*\S+\s+([A-Za-z]:)\s+(\\\\\S+)/);
+    if (m) out.push({ path: m[2], letter: m[1] });
+  }
+  return out;
+}
+function parseHkuSids(text) {
+  if (text == null) return null;
+  const out = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = line.trim().match(/^HKEY_USERS\\(S-1-5-21[^\s_\\]+)$/i);
+    if (m) out.push(m[1]);
+  }
+  return out;
 }
 async function refreshNetShares() {
-  const [reg, smb] = await Promise.all([
-    runNetPs(NET_PS_REGISTRY, 15000),
-    runNetPs(NET_PS_SMB, 15000),
-  ]);
-  const arr = reg.arr.concat(smb.arr);
+  const MP_CU = 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2';
+  const sids = parseHkuSids(await runTool(['reg', 'query', 'HKU'], 8000));
+  const jobs = [
+    runTool(['reg', 'query', 'HKCU\\Network', '/s', '/v', 'RemotePath'], 8000)
+      .then(t => t == null ? null : parseRegNetwork(t)),
+    runTool(['reg', 'query', MP_CU], 8000)
+      .then(t => t == null ? null : parseRegMounts(t, MP_CU)),
+    runTool(['net', 'use'], 8000)
+      .then(t => t == null ? null : parseNetUse(t)),
+  ];
+  for (const sid of (sids || [])) {
+    const nk = 'HKEY_USERS\\' + sid + '\\Network';
+    const mk = 'HKEY_USERS\\' + sid + '\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2';
+    jobs.push(runTool(['reg', 'query', nk, '/s', '/v', 'RemotePath'], 8000)
+      .then(t => t == null ? null : parseRegNetwork(t)));
+    jobs.push(runTool(['reg', 'query', mk], 8000)
+      .then(t => t == null ? null : parseRegMounts(t, mk)));
+  }
+  const parts = await Promise.all(jobs);
+  const arr = [].concat(...parts.filter(p => p != null));
   // —— 通用归一规则（产品级，不针对任何具体主机/机器） ——
   // 所有网络共享条目一律收敛到主机根：任何 \\host\share\... 深度的路径
   // （映射盘符 / UNC 记录 / 活跃 SMB 连接，任何主机、任何深度）统一归一为 \\host，
@@ -1123,7 +1176,7 @@ async function refreshNetShares() {
   const list = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
     .map(x => ({ path: toHostRoot(x.path), letter: x.letter || null }))
     .filter((x, i, a) => a.findIndex(y => (y.letter || '') === (x.letter || '') && y.path.toLowerCase() === x.path.toLowerCase()) === i);
-  const cleanRun = reg.ok && smb.ok;   // 两源都完整跑完才算"确实没有条目"
+  const cleanRun = sids != null && parts.every(p => p != null);   // 全部源完整跑完才算"确实没有条目"
   if (list.length || cleanRun || !netCache) netCache = list;
   // 降级运行（有源被杀/失败且没拿到条目）：2 分钟后就重试，不等满 10 分钟
   netCacheAt = cleanRun || list.length ? Date.now() : Date.now() - 480000;
