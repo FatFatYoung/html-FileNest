@@ -2160,7 +2160,7 @@ function extractPptText(buf) {
 
 // —— 文件缩略图 /api/thumb（2026-11-16）：文件列表图标用低清小图（64px 长边）——
 // PSD/PSB 复用内嵌 JPEG 提取（资源区段在文件头部，只读头 32MB）；
-// AI 尽力提取（PDF 兼容型扫内嵌 JPEG / DOS EPS 头取 TIFF 预览转 JPEG）；
+// AI/EPS 尽力提取（PDF 兼容型扫内嵌 JPEG / DOS EPS 头取 TIFF 预览转 JPEG，.eps 同族）；
 // 图片走 GDI+ 缩放（PowerShell System.Drawing）存 cacheDir/thumbs（键含 mtime+size）；
 // svg 原样回传（浏览器自缩放）。提不出缩略图回 404，前端保留原图标。
 const THUMB_EDGE = 64;
@@ -2342,19 +2342,20 @@ function rawThumbToBmp(raw) {
   return rgbaToBmp(r.rgba, r.w, r.h);
 }
 
-// 64px 长边 JPEG 缩略图（q75、不放大）。四级链：worker 池并行 GDI+ 解码（2026-11-19
+// JPEG 缩略图/预览转码（q75、不放大；edge 默认 THUMB_EDGE 64px，预览窗格传大 edge）。
+// 四级链：worker 池并行 GDI+ 解码（2026-11-19
 // 提速二，16 图冷墙钟 7.2s→亚秒级）→ 内联 GDI+ FFI（池不可用时）→ jimp 纯 JS →
 // PowerShell GDI+ 兜底。成功写 outFile 返回 true。
-async function gdiThumb(srcFile, outFile) {
+async function gdiThumb(srcFile, outFile, edge) {
   const pool = thumbPool();
-  if (pool && await pool.decode(srcFile, outFile)) return true;
-  if (gdiFfiThumb(srcFile, outFile)) return true;
+  if (pool && await pool.decode(srcFile, outFile, edge)) return true;
+  if (gdiFfiThumb(srcFile, outFile, edge)) return true;
   try {
     const im = await Jimp.fromBuffer(fs.readFileSync(srcFile), JIMP_DECODE_OPTS);
-    await writeThumbJpeg(im, outFile);
+    await writeThumbJpeg(im, outFile, edge);
     return true;
   } catch (e) {
-    return gdiFallback(srcFile, outFile);
+    return gdiFallback(srcFile, outFile, edge);
   }
 }
 
@@ -2369,12 +2370,13 @@ async function gdiThumbRgba(rgba, w, h, outFile) {
 // 解码选项：jpeg-js 有 decompression-bomb 内存/分辨率上限，按本机服务端放开
 const JIMP_DECODE_OPTS = { 'image/jpeg': { maxMemoryUsageInMB: 1024, maxResolutionInMP: 100 } };
 
-// 等比缩放到 THUMB_EDGE 内（不放大）→ JPEG q75 写盘
-async function writeThumbJpeg(im, outFile) {
+// 等比缩放到 edge（默认 THUMB_EDGE）内（不放大）→ JPEG q75 写盘
+async function writeThumbJpeg(im, outFile, edge) {
+  const EDGE = edge || THUMB_EDGE;
   const w = im.width, h = im.height;
-  if (w > THUMB_EDGE || h > THUMB_EDGE) {
-    const nw = w >= h ? THUMB_EDGE : Math.max(1, Math.round(w * THUMB_EDGE / h));
-    const nh = w >= h ? Math.max(1, Math.round(h * THUMB_EDGE / w)) : THUMB_EDGE;
+  if (w > EDGE || h > EDGE) {
+    const nw = w >= h ? EDGE : Math.max(1, Math.round(w * EDGE / h));
+    const nh = w >= h ? Math.max(1, Math.round(h * EDGE / w)) : EDGE;
     im.resize({ w: nw, h: nh });
   }
   const buf = await im.getBuffer('image/jpeg', { quality: 75 });
@@ -2383,13 +2385,13 @@ async function writeThumbJpeg(im, outFile) {
 
 // PowerShell GDI+ 兜底（sharp 不支持的输入格式）。EncodedCommand 传脚本（路径引号/特殊
 // 字符零注入），异步子进程 + 15s 强杀（Bun.spawn，同 listShares 模式）；成功写 outFile 返回 true
-async function gdiFallback(srcFile, outFile) {
+async function gdiFallback(srcFile, outFile, edge) {
   const s = String(srcFile).replace(/'/g, "''");
   const o = String(outFile).replace(/'/g, "''");
   const ps = [
     'Add-Type -AssemblyName System.Drawing',
     "$src = New-Object System.Drawing.Bitmap('" + s + "')",
-    '$max = ' + THUMB_EDGE,
+    '$max = ' + (edge || THUMB_EDGE),
     '$w = $src.Width; $h = $src.Height',
     'if ($w -lt 1 -or $h -lt 1) { exit 1 }',
     'if ($w -le $max -and $h -le $max) { $nw = $w; $nh = $h } elseif ($w -ge $h) { $nw = $max; $nh = [Math]::Max(1, [int]($h * $max / $w)) } else { $nh = $max; $nw = [Math]::Max(1, [int]($w * $max / $h)) }',
@@ -2447,7 +2449,7 @@ async function thumbFile(res, q, cfg) {
   const outFile = path.join(tdir, key + '.jpg');
   if (fs.existsSync(outFile)) return sendImageFile(res, outFile, 'image/jpeg');
 
-  const head = readHead(file, ext === '.ai' ? 4 * 1048576 : 64 * 1048576);
+  const head = readHead(file, (ext === '.ai' || ext === '.eps') ? 4 * 1048576 : 64 * 1048576);
 
   // PSD/PSB 三级兜底：内嵌 JPEG（1033/1036 format 0）→ raw RGB 缩略图（format 1）→ 合成图
   if (ext === '.psd' || ext === '.psb') {
@@ -2488,9 +2490,10 @@ async function thumbFile(res, q, cfg) {
     return sendJson(res, 404, { ok: false, error: 'no embedded thumbnail' });
   }
 
-  // AI 三级兜底：DOS EPS 头 TIFF 预览 → PDF 兼容段内嵌 JPEG → 全文扫 JPEG
-  // 现代 AI（%!PS 文本头）的 PDF 兼容段贴在文件尾部，所以扫描分头/尾两段
-  if (ext === '.ai') {
+  // AI/EPS 三级兜底：DOS EPS 头 TIFF 预览 → PDF 兼容段内嵌 JPEG → 全文扫 JPEG
+  // 现代 AI（%!PS 文本头）的 PDF 兼容段贴在文件尾部，所以扫描分头/尾两段；
+  // .eps 与 .ai 同族（Illustrator 导出 EPS 同样带 DOS EPS TIFF 预览或 PDF 兼容段）
+  if (ext === '.ai' || ext === '.eps') {
     const tif = extractEpsTiff(head);
     if (tif && tif.length < 20 * 1048576) {
       const tifTmp = path.join(tdir, key + '.tif');
@@ -2595,15 +2598,42 @@ async function officePreview(res, q, cfg) {
     }
   }
 
-  // —— AI 文件：PDF 兼容型 → PDF 预览；旧版 PostScript → 提示系统打开 ——
-  if (ext === '.ai') {
+  // —— AI / EPS 文件：DOS EPS TIFF 预览 → PDF 兼容型 PDF 预览 → 旧版 PostScript 提示 ——
+  if (ext === '.ai' || ext === '.eps') {
+    // DOS EPS 二进制头（Illustrator 8 及更早/导出 EPS 常见）：取 TIFF 预览转 JPEG 展示（结果缓存）
+    const tif = extractEpsTiff(buf);
+    if (tif && tif.length < 20 * 1048576) {
+      const tdir = path.join(cfg.cacheDir, 'thumbs');
+      if (!fs.existsSync(tdir)) fs.mkdirSync(tdir, { recursive: true });
+      const ckey = crypto.createHash('sha1').update(String(q.path) + '|' + buf.length).digest('hex').slice(0, 20);
+      const pvJpg = path.join(tdir, ckey + '.pv.jpg');
+      const tifTmp = path.join(tdir, ckey + '.pv.tif');
+      let pv = null;
+      if (fs.existsSync(pvJpg)) {
+        try { pv = fs.readFileSync(pvJpg); } catch (e) { pv = null; }
+      } else {
+        try {
+          fs.writeFileSync(tifTmp, tif);
+          if (await gdiThumb(tifTmp, pvJpg, 1024) && fs.existsSync(pvJpg)) pv = fs.readFileSync(pvJpg);
+        } catch (e) {}
+        try { fs.unlinkSync(tifTmp); } catch (e) {}
+      }
+      if (pv && pv.length) {
+        return sendJson(res, 200, {
+          ok: true, type: 'image',
+          dataUrl: 'data:image/jpeg;base64,' + pv.toString('base64'),
+          note: ext === '.eps' ? 'EPS 预览图（完整内容请用 Illustrator 打开）' : 'AI 预览图（完整内容请用 Illustrator 打开）',
+          ext
+        });
+      }
+    }
     if (buf.length >= 5 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46 && buf[4] === 0x2D) {
-      // %PDF- 头：PDF 兼容 AI，返回 pdf 标记让前端用 iframe 预览
+      // %PDF- 头：PDF 兼容 AI/EPS，返回 pdf 标记让前端用 iframe 预览
       return sendJson(res, 200, { ok: true, type: 'pdf', ext });
     }
     if (buf.length >= 2 && buf[0] === 0x25 && buf[1] === 0x21) {
-      // %!PS-Adobe 头：旧版 PostScript AI，无法网页预览
-      return sendJson(res, 200, { ok: true, type: 'fallback', message: 'PostScript 格式 AI 文件，需用 Illustrator 打开', ext });
+      // %!PS-Adobe 头：旧版 PostScript，无法网页预览
+      return sendJson(res, 200, { ok: true, type: 'fallback', message: (ext === '.eps' ? 'PostScript 格式 EPS 文件，需用 Illustrator 打开' : 'PostScript 格式 AI 文件，需用 Illustrator 打开'), ext });
     }
     // 未知格式：尝试按 PSD 处理（某些 AI 可能内嵌 PSD 数据）
   }
@@ -2622,14 +2652,14 @@ async function officePreview(res, q, cfg) {
     throw new Error('cannot extract image from PSD (compression=' + buf.readUInt16BE(38) + ' depth=' + buf.readUInt16BE(24) + ' ch=' + buf.readUInt16BE(22) + ' w=' + buf.readUInt32BE(18) + ' h=' + buf.readUInt32BE(14) + ' len=' + buf.length + ')');
   }
 
-  // —— AI 文件：PDF 兼容检测 ——
-  if (ext === '.ai') {
+  // —— AI / EPS 文件：PDF 兼容检测 ——
+  if (ext === '.ai' || ext === '.eps') {
     // 现代 AI 文件 (CS+) 是 PDF 兼容格式
     if (buf.length > 5 && buf.slice(0, 5).toString('ascii') === '%PDF-') {
-      return sendJson(res, 200, { ok: true, type: 'pdf', ext: 'ai' });
+      return sendJson(res, 200, { ok: true, type: 'pdf', ext });
     }
-    // 旧版 PostScript AI → 尝试提取内嵌图像
-    throw new Error('legacy PostScript AI file (not PDF-compatible), use system handler');
+    // 旧版 PostScript → 尝试提取内嵌图像
+    throw new Error('legacy PostScript ' + ext.slice(1).toUpperCase() + ' file (not PDF-compatible), use system handler');
   }
 
   throw new Error('unsupported office format: ' + ext);
@@ -3270,9 +3300,10 @@ function gdiplusFfi() {
   return _gdiplusFfi;
 }
 
-// GDI+ 原生缩略图：解码 → HighQualityBicubic 缩放到 THUMB_EDGE 内（不放大）→ JPEG q75
-// （GDI+ 默认编码质量即 75，与 jimp/PS 路径一致）；成功写 outFile 返回 true
-function gdiFfiThumb(srcFile, outFile) {
+// GDI+ 原生缩放转码：解码 → HighQualityBicubic 缩放到 edge（默认 THUMB_EDGE）内
+// （不放大）→ JPEG q75（GDI+ 默认编码质量即 75，与 jimp/PS 路径一致）；成功写 outFile 返回 true
+function gdiFfiThumb(srcFile, outFile, edge) {
+  const EDGE = edge || THUMB_EDGE;
   let img = 0n, G;
   try {
     G = gdiplusFfi();
@@ -3285,17 +3316,17 @@ function gdiFfiThumb(srcFile, outFile) {
     const w = wb.readUInt32LE(0), h = hb.readUInt32LE(0);
     if (w < 1 || h < 1) return false;
     let nw = w, nh = h;
-    if (w > THUMB_EDGE || h > THUMB_EDGE) {
-      nw = w >= h ? THUMB_EDGE : Math.max(1, Math.round(w * THUMB_EDGE / h));
-      nh = w >= h ? Math.max(1, Math.round(h * THUMB_EDGE / w)) : THUMB_EDGE;
+    if (w > EDGE || h > EDGE) {
+      nw = w >= h ? EDGE : Math.max(1, Math.round(w * EDGE / h));
+      nh = w >= h ? Math.max(1, Math.round(h * EDGE / w)) : EDGE;
     }
     const dstOut = Buffer.alloc(8);
     if (G.syms.GdipCreateBitmapFromScan0(nw, nh, 0, 0x26200A /* PixelFormat32bppARGB */, 0n, dstOut) !== 0) return false;
     const dst = dstOut.readBigUInt64LE(0);
     try {
-      // 两步缩放（与 THUMB_WORKER_SRC 内 decodeThumb 保持同步：Bilinear→512 中间图→
-      // HQBicubic→THUMB_EDGE，插值核成本砍 ~2.5 倍，质量贴一步 HQ）
-      const INTER = 512;
+      // 两步缩放（与 THUMB_WORKER_SRC 内 decodeThumb 保持同步：Bilinear→INTER 中间图→
+      // HQBicubic→EDGE，插值核成本砍 ~2.5 倍，质量贴一步 HQ）
+      const INTER = Math.max(512, EDGE * 4);
       let drawSrc = img, drawW = w, drawH = h, inter = 0n;
       try {
         if (w > INTER || h > INTER) {
@@ -3367,7 +3398,7 @@ function gdiplus() {
   G = { syms, token: token.readBigUInt64LE(0) };
   return G;
 }
-function decodeThumb(srcFile, outFile) {
+function decodeThumb(srcFile, outFile, edge) {
   let img = 0n, S;
   try {
     S = gdiplus().syms;
@@ -3379,7 +3410,7 @@ function decodeThumb(srcFile, outFile) {
     if (S.GdipGetImageWidth(img, wb) !== 0 || S.GdipGetImageHeight(img, hb) !== 0) return false;
     const w = wb.readUInt32LE(0), h = hb.readUInt32LE(0);
     if (w < 1 || h < 1) return false;
-    const EDGE = 64;
+    const EDGE = edge || 64;
     let nw = w, nh = h;
     if (w > EDGE || h > EDGE) {
       nw = w >= h ? EDGE : Math.max(1, Math.round(w * EDGE / h));
@@ -3390,9 +3421,9 @@ function decodeThumb(srcFile, outFile) {
     const dst = dstOut.readBigUInt64LE(0);
     try {
       // 两步缩放（2026-11-19）：超大降采样一步 HQBicubic 的插值核是耗时大头（实测
-      // 12MP→64px mode7 ~390ms vs mode3 ~140ms）；先 Bilinear 快缩到 512 长边中间图、
-      // 再 HQBicubic 收到 THUMB_EDGE——质量接近一步 HQ、耗时接近一步 Bilinear
-      const INTER = 512;
+      // 12MP→64px mode7 ~390ms vs mode3 ~140ms）；先 Bilinear 快缩到 INTER 长边中间图、
+      // 再 HQBicubic 收到 EDGE——质量接近一步 HQ、耗时接近一步 Bilinear
+      const INTER = Math.max(512, EDGE * 4);
       let drawSrc = img, drawW = w, drawH = h, inter = 0n;
       try {
         if (w > INTER || h > INTER) {
@@ -3430,7 +3461,7 @@ function decodeThumb(srcFile, outFile) {
 }
 parentPort.on('message', (m) => {
   let ok = false;
-  try { ok = decodeThumb(m.src, m.out); } catch (e) { ok = false; }
+  try { ok = decodeThumb(m.src, m.out, m.edge); } catch (e) { ok = false; }
   parentPort.postMessage({ id: m.id, ok: ok === true });
 });
 `;
@@ -3500,7 +3531,7 @@ function thumbPool() {
     }
     _thumbPoolState = {
       size: slots.length,
-      decode(srcFile, outFile) {
+      decode(srcFile, outFile, edge) {
         return new Promise((resolve) => {
           const cand = slots.filter(s => s.w).sort((a, b) => a.busy - b.busy);
           if (!cand.length) return resolve(false);
@@ -3510,7 +3541,7 @@ function thumbPool() {
           job.timer = setTimeout(() => { settle(id, false); }, 30000);
           pending.set(id, job);
           slot.busy++;
-          try { slot.w.postMessage({ id, src: srcFile, out: outFile }); }
+          try { slot.w.postMessage({ id, src: srcFile, out: outFile, edge: edge || 0 }); }
           catch (e) { settle(id, false); }
         });
       }
