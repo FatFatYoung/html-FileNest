@@ -320,6 +320,7 @@ html-FileNest/
   **Fixes**
   - Forced downloads of browser-active content (HTML / JS / XML / MHT) again keep the original file name (regression in v2.2.2.0).
   - Restoring from the recycle bin revalidates the entry's original path against the currently allowed roots — an entry that now falls outside the roots stays in the recycle bin instead of being written out of bounds.
+  - Network entries on the home page (mapped drive letters, remembered UNC shares) no longer go missing: enumeration now runs on the built-in `reg.exe`/`net.exe` instead of PowerShell, so a slow or broken PowerShell at service startup can no longer blank them out. A failed enumeration never overwrites good cached entries and retries automatically within two minutes.
 
 **v2.2.2.0**
 
