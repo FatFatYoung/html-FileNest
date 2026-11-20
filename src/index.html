@@ -492,6 +492,8 @@ body {
     "加载中...": "Loading...",
     "预览安全组件缺失，请使用新版 index.html": "Preview security component missing; please use a newer index.html",
     "PSD 缩略图预览（完整内容请用 Photoshop 打开）": "PSD thumbnail preview (open in Photoshop for full content)",
+    "图片转码预览（完整内容请用系统看图工具打开）": "Transcoded image preview (open in system viewer for full content)",
+    "无法解码该图片格式，请用系统看图工具打开": "Cannot decode this image format, open it with a system viewer",
     "PSD 复合图像预览（图层内容请用 Photoshop 打开）": "PSD composite preview (open in Photoshop for layer content)",
     "AI 预览图（完整内容请用 Illustrator 打开）": "AI preview (open in Illustrator for full content)",
     "EPS 预览图（完整内容请用 Illustrator 打开）": "EPS preview (open in Illustrator for full content)",
@@ -1993,12 +1995,12 @@ body {
   // URL 与文本加载由调用方注入，新增预览类型只需改这一处 ——
   function renderPreviewContent(item, opt) {
     var ext = normExt(item.ext);
-    var isImage = ['jpg','jpeg','jpe','jfif','png','gif','webp','svg','bmp','ico','avif','apng','tiff','tif','heic','heif'].indexOf(ext) >= 0;
+    var isImage = ['jpg','jpeg','jpe','jfif','png','gif','webp','svg','bmp','ico','avif','apng'].indexOf(ext) >= 0;
     var isVideo = ['mp4','webm','mkv','mov','avi','ogv'].indexOf(ext) >= 0;
     var isAudio = ['mp3','wav','flac','m4a','ogg','aac'].indexOf(ext) >= 0;
     var isPdf   = ext === 'pdf';
     var isOffice = ['doc','docx','xls','xlsx','ppt','pptx'].indexOf(ext) >= 0;
-    var isDesign = ['psd','psb','ai','eps'].indexOf(ext) >= 0;
+    var isDesign = ['psd','psb','ai','eps','tiff','tif','heic','heif'].indexOf(ext) >= 0;
     // 放宽文本扩展名列表：常见文本/代码/配置扩展名均尝试文本预览
     var isText  = ['txt','text','md','markdown','json','json5','jsonc','js','mjs','cjs',
       'ts','jsx','tsx','html','htm','css','scss','less','xml','yml','yaml','toml','ini',

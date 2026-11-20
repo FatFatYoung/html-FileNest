@@ -1788,13 +1788,18 @@ function extractPsdThumbnail(buf) {
 function extractPsdComposite(buf) {
   if (buf.length < 30) return null;
   if (buf[0] !== 0x38 || buf[1] !== 0x42 || buf[2] !== 0x50 || buf[3] !== 0x53) return null;
+  const ver = buf.readUInt16BE(4);   // 1=PSD, 2=PSB（层区长度与 RLE 行长表宽度不同）
   let offset = 26;
   // 跳过 Color Mode Data
   const cmLen = buf.readUInt32BE(offset); offset += 4 + cmLen;
   // 跳过 Image Resources
   const irLen = buf.readUInt32BE(offset); offset += 4 + irLen;
-  // 跳过 Layer & Mask Info
-  const lmLen = buf.readUInt32BE(offset); offset += 4 + lmLen;
+  // 跳过 Layer & Mask Info（PSD 4 字节长度，PSB 8 字节长度）
+  if (ver >= 2) {
+    const lmLen = Number(buf.readBigUInt64BE(offset)); offset += 8 + lmLen;
+  } else {
+    const lmLen = buf.readUInt32BE(offset); offset += 4 + lmLen;
+  }
   // Image Data 区段
   if (offset + 2 > buf.length) return null;
   const compression = buf.readUInt16BE(offset); offset += 2;
@@ -1823,19 +1828,20 @@ function extractPsdComposite(buf) {
       }
     }
   } else if (compression === 1) {
-    // RLE (PackBits): 先读行长度表，再解压数据
+    // RLE (PackBits): 先读行长度表，再解压数据（PSD 每项 2 字节，PSB 4 字节）
     const rowsPerChannel = height;
     const rowCount = rowsPerChannel * channels;
     const countsStart = offset;
+    const rlSize = ver >= 2 ? 4 : 2;
     // 读每行压缩长度
     const rowLengths = [];
     for (let r = 0; r < rowCount; r++) {
-      rowLengths.push(buf.readUInt16BE(countsStart + r * 2));
+      rowLengths.push(rlSize === 4 ? buf.readUInt32BE(countsStart + r * 4) : buf.readUInt16BE(countsStart + r * 2));
     }
-    let dataStart = countsStart + rowCount * 2;
-    // 按通道解压每行
+    let dataStart = countsStart + rowCount * rlSize;
+    // 按通道解压每行（dataOff 全程顺序推进；PSB 行长表 4 字节，PSD 2 字节）
+    let dataOff = dataStart;
     for (let ch = 0; ch < Math.min(channels, 4); ch++) {
-      let dataOff = dataStart;
       for (let r = 0; r < rowsPerChannel; r++) {
         const rowLen = rowLengths[ch * rowsPerChannel + r];
         // PackBits 解压一行
@@ -2478,6 +2484,37 @@ function extractPsdThumbVariant(buf) {
   return null;
 }
 
+// %BeginPhotoshop: <len> ... %EndPhotoshop（EPS 内嵌 Photoshop 图像资源块，hex 文本）
+// → 8BIM 资源缓冲（可再走 PSD 缩略图链）。行首 '%' 前缀/空白剔除后按 hex 解码。
+function extractBeginPhotoshop(buf) {
+  const marker = buf.indexOf('%BeginPhotoshop');
+  if (marker < 0) return null;
+  const dataStart = buf.indexOf(0x0A, marker);
+  const end = buf.indexOf('%EndPhotoshop', dataStart > 0 ? dataStart : marker);
+  if (dataStart < 0 || end < 0 || end - dataStart > 64 * 1048576) return null;
+  const seg = buf.subarray(dataStart + 1, end);
+  let hex = '';
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if ((c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)) hex += String.fromCharCode(c);
+  }
+  hex = hex.slice(0, hex.length - (hex.length % 2));
+  if (hex.length < 32) return null;
+  const dec = Buffer.from(hex, 'hex');
+  if (dec.length < 16) return null;
+  if (dec[0] !== 0x38 || dec[1] !== 0x42 || dec[2] !== 0x49 || dec[3] !== 0x4D) return null;
+  // 包一层最小 PSD 文件壳（头 26 + ColorMode len 4 + 资源 len 4），
+  // 让 extractPsdThumbnail / extractPsdRawThumb 等 PSD 布局解析器直接可用
+  const wrap = Buffer.alloc(34);
+  wrap.write('8BPS', 0, 'latin1');
+  wrap.writeUInt16BE(1, 4);
+  wrap.writeUInt16BE(3, 12); wrap.writeUInt32BE(1, 14); wrap.writeUInt32BE(1, 18);
+  wrap.writeUInt16BE(8, 22); wrap.writeUInt16BE(3, 24);
+  wrap.writeUInt32BE(0, 26);             // Color Mode Data 长度 0
+  wrap.writeUInt32BE(dec.length, 30);    // Image Resources 长度 = 资源块全长
+  return Buffer.concat([wrap, dec]);
+}
+
 // RGBA（顶行在前）→ 24bpp BMP（底行在前、行 4 字节对齐），给 GDI+ 当中间格式
 function rgbaToBmp(rgba, w, h) {
   const rowRaw = w * 3;
@@ -2599,6 +2636,50 @@ async function gdiFallback(srcFile, outFile, edge) {
   } catch (e) { return false; }
 }
 
+// PowerShell WinRT PDF 首页渲染（Windows.Data.Pdf，系统自带组件、零第三方依赖）。
+// LoadFromStreamAsync 走 AsTask 桥（PS5.1 实证可用）；RenderToStreamAsync 的 await 桥
+// RCW 转型不可用，完成信号改用输出流长度稳定判据（6×50ms 不变 + PNG 魔数校验）。
+// 输出 PNG 到 outPng，成功返回 true；EncodedCommand 传脚本 + 20s 强杀（gdiFallback 同款）。
+async function pdfFallback(srcFile, outPng) {
+  const s = String(srcFile).replace(/'/g, "''");
+  const o = String(outPng).replace(/'/g, "''");
+  const ps = [
+    'Add-Type -AssemblyName System.Runtime.WindowsRuntime',
+    '$null = [Windows.Data.Pdf.PdfDocument,Windows.Data.Pdf,ContentType=WindowsRuntime]',
+    "$gt = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 })[0]",
+    'function Await($t, $r) { $a = $gt.MakeGenericMethod($r); $n = $a.Invoke($null, @($t)); $n.Wait(-1) | Out-Null; $n.Result }',
+    "$b = [System.IO.File]::ReadAllBytes('" + s + "')",
+    '$ms = New-Object System.IO.MemoryStream(,$b)',
+    '$ra = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($ms)',
+    '$doc = Await ([Windows.Data.Pdf.PdfDocument]::LoadFromStreamAsync($ra)) ([Windows.Data.Pdf.PdfDocument])',
+    'if ($doc.PageCount -lt 1) { exit 1 }',
+    '$page = $doc.GetPage(0)',
+    '$sz = $page.Size',
+    '$opts = New-Object Windows.Data.Pdf.PdfPageRenderOptions',
+    '$opts.DestinationWidth = [uint32]512',
+    '$opts.DestinationHeight = [uint32]([Math]::Max(1, [Math]::Round(512 * $sz.Height / $sz.Width)))',
+    '$out = New-Object System.IO.MemoryStream',
+    '$ora = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($out)',
+    '$op = $page.RenderToStreamAsync($ora, $opts)',
+    '$deadline = (Get-Date).AddSeconds(15)',
+    '$last = -1; $stable = 0',
+    'while ((Get-Date) -lt $deadline) { $len = $out.Length; if ($len -gt 0 -and $len -eq $last) { $stable++; if ($stable -ge 6) { break } } else { $stable = 0 }; $last = $len; Start-Sleep -Milliseconds 50 }',
+    'if ($out.Length -lt 24) { exit 1 }',
+    "$out.Position = 0; [System.IO.File]::WriteAllBytes('" + o + "', $out.ToArray())",
+    'exit 0'
+  ].join('\n');
+  try {
+    const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+      Buffer.from(ps, 'utf16le').toString('base64')], { stdout: 'ignore', stderr: 'ignore' });
+    const killTimer = setTimeout(() => { try { proc.kill(); } catch (e) {} }, 20000);
+    const code = await proc.exited;
+    clearTimeout(killTimer);
+    if (code !== 0 || !fs.existsSync(outPng)) return false;
+    const h = fs.readFileSync(outPng);
+    return h.length >= 24 && h[0] === 0x89 && h[1] === 0x50 && h[2] === 0x4E && h[3] === 0x47;
+  } catch (e) { return false; }
+}
+
 function sendImageFile(res, file, mime, extra) {
   const buf = fs.readFileSync(file);
   res.writeHead(200, Object.assign({
@@ -2688,6 +2769,21 @@ async function thumbFile(res, q, cfg) {
     let scanBufs;
     if (st.size <= 16 * 1048576) scanBufs = [readHead(file, st.size)];
     else scanBufs = [readTail(file, 12 * 1048576, st.size), head];   // 尾部先扫（PDF 段通常贴尾）
+    // 二级半：%BeginPhotoshop 8BIM 资源块（EPS 内嵌 Photoshop 数据）→ PSD 缩略图链
+    for (const b of scanBufs) {
+      const psBlock = extractBeginPhotoshop(b);
+      if (!psBlock) continue;
+      const th = extractPsdThumbnail(psBlock);
+      if (th && th.length >= 16 && th[0] === 0xFF && th[1] === 0xD8) {
+        fs.writeFileSync(outFile, th);
+        return sendImageFile(res, outFile, 'image/jpeg');
+      }
+      const raw = extractPsdRawThumb(psBlock);
+      if (raw) {
+        const rr = rawThumbToRgba(raw);
+        if (await gdiThumbRgba(rr.rgba, rr.w, rr.h, outFile)) return sendImageFile(res, outFile, 'image/jpeg');
+      }
+    }
     for (const b of scanBufs) {
       const jpg = scanFirstJpeg(b);
       if (jpg) { fs.writeFileSync(outFile, jpg); return sendImageFile(res, outFile, 'image/jpeg'); }
@@ -2696,6 +2792,16 @@ async function thumbFile(res, q, cfg) {
     for (const b of scanBufs) {
       const epsi = extractEpsiPreview(b);
       if (epsi && await gdiThumbRgba(epsi.rgba, epsi.w, epsi.h, outFile)) return sendImageFile(res, outFile, 'image/jpeg');
+    }
+    // 五级：PDF 兼容 AI/EPS（纯矢量无内嵌位图）→ WinRT 渲染首页（pdfFallback）
+    if (head.length >= 5 && head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46 && head[4] === 0x2D) {
+      const pdfTmp = path.join(tdir, key + '.pv.png');
+      let ok = false;
+      if (await pdfFallback(file, pdfTmp)) {
+        ok = await gdiThumb(pdfTmp, outFile);
+      }
+      try { fs.unlinkSync(pdfTmp); } catch (e) {}
+      if (ok) return sendImageFile(res, outFile, 'image/jpeg');
     }
     return sendJson(res, 404, { ok: false, error: 'no embedded preview' });
   }
@@ -2823,10 +2929,26 @@ async function officePreview(res, q, cfg) {
       return sendJson(res, 200, { ok: true, type: 'pdf', ext });
     }
 
-    // ③ 内嵌 JPEG 扫描 → EPSI ASCII 位图（0=白 最大值=黑）
+    // ③ %BeginPhotoshop 8BIM 资源块 → 内嵌 JPEG 扫描 → EPSI ASCII 位图（0=白 最大值=黑）
     {
-      const jpg = scanFirstJpeg(buf);
-      if (jpg) pv = await transcodePv(jpg, '.pv.src.jpg');
+      const psBlock = extractBeginPhotoshop(buf);
+      if (psBlock) {
+        const th = extractPsdThumbnail(psBlock);
+        if (th && th.length >= 16 && th[0] === 0xFF && th[1] === 0xD8) pv = th;
+        if (!pv) {
+          const raw = extractPsdRawThumb(psBlock);
+          if (raw) {
+            const rr = rawThumbToRgba(raw);
+            try {
+              if (await gdiThumbRgba(rr.rgba, rr.w, rr.h, pvJpg, 1024) && fs.existsSync(pvJpg)) pv = fs.readFileSync(pvJpg);
+            } catch (e) {}
+          }
+        }
+      }
+      if (!pv) {
+        const jpg = scanFirstJpeg(buf);
+        if (jpg) pv = await transcodePv(jpg, '.pv.src.jpg');
+      }
       if (!pv) {
         const epsi = extractEpsiPreview(buf);
         if (epsi) {
@@ -2845,18 +2967,31 @@ async function officePreview(res, q, cfg) {
     // 未知格式：尝试按 PSD 处理（某些 AI 可能内嵌 PSD 数据）
   }
 
-  // —— PSD / PSB：提取内嵌 JPEG 缩略图 → 复合图像兜底 ——
+  // —— PSD / PSB：内嵌 JPEG 缩略图 → raw RGB 缩略图 → 复合图像兜底 ——
   if (ext === '.psd' || ext === '.psb') {
     const thumb = extractPsdThumbnail(buf);
-    if (thumb) {
+    if (thumb && thumb.length >= 16 && thumb[0] === 0xFF && thumb[1] === 0xD8) {
       return sendJson(res, 200, { ok: true, type: 'image', dataUrl: 'data:image/jpeg;base64,' + thumb.toString('base64'), ext });
     }
-    // 缩略图提取失败 → 尝试提取复合图像
+    // raw RGB 缩略图资源（format=1，PSB 常见）→ 转 JPEG（thumbFile 同款第二级）
+    const raw = extractPsdRawThumb(buf);
+    if (raw) {
+      const rr = rawThumbToRgba(raw);
+      const tdir2 = path.join(cfg.cacheDir, 'thumbs');
+      if (!fs.existsSync(tdir2)) fs.mkdirSync(tdir2, { recursive: true });
+      const ckey2 = crypto.createHash('sha1').update(String(q.path) + '|' + buf.length).digest('hex').slice(0, 20);
+      const out2 = path.join(tdir2, ckey2 + '.pv.jpg');
+      try {
+        if (!fs.existsSync(out2)) await gdiThumbRgba(rr.rgba, rr.w, rr.h, out2, 1024);
+        if (fs.existsSync(out2)) return sendJson(res, 200, { ok: true, type: 'image', dataUrl: 'data:image/jpeg;base64,' + fs.readFileSync(out2).toString('base64'), ext });
+      } catch (e) {}
+    }
+    // 复合图像兜底（PSD/PSB 合成层；PSB 已适配 8 字节层区长度 + 4 字节 RLE 行长）
     const composite = extractPsdComposite(buf);
     if (composite) {
       return sendJson(res, 200, { ok: true, type: 'raw-image', width: composite.width, height: composite.height, data: composite.rgba.toString('base64'), ext });
     }
-    throw new Error('cannot extract image from PSD (compression=' + buf.readUInt16BE(38) + ' depth=' + buf.readUInt16BE(24) + ' ch=' + buf.readUInt16BE(22) + ' w=' + buf.readUInt32BE(18) + ' h=' + buf.readUInt32BE(14) + ' len=' + buf.length + ')');
+    throw new Error('cannot extract image from PSD (ver=' + buf.readUInt16BE(4) + ' depth=' + buf.readUInt16BE(22) + ' ch=' + buf.readUInt16BE(12) + ' w=' + buf.readUInt32BE(18) + ' h=' + buf.readUInt32BE(14) + ' len=' + buf.length + ')');
   }
 
   // —— AI / EPS 文件：PDF 兼容检测 ——
@@ -2867,6 +3002,30 @@ async function officePreview(res, q, cfg) {
     }
     // 旧版 PostScript → 尝试提取内嵌图像
     throw new Error('legacy PostScript ' + ext.slice(1).toUpperCase() + ' file (not PDF-compatible), use system handler');
+  }
+
+  // —— 浏览器无法直显的位图（TIFF/HEIC/TGA 等）：GDI+ 转码 JPEG 预览 ——
+  if (['.tif', '.tiff', '.heic', '.heif', '.tga'].includes(ext)) {
+    const tdir3 = path.join(cfg.cacheDir, 'thumbs');
+    if (!fs.existsSync(tdir3)) fs.mkdirSync(tdir3, { recursive: true });
+    const ckey3 = crypto.createHash('sha1').update(String(q.path) + '|' + buf.length).digest('hex').slice(0, 20);
+    const pvJpg3 = path.join(tdir3, ckey3 + '.pv.jpg');
+    if (!fs.existsSync(pvJpg3)) {
+      const srcTmp = path.join(tdir3, ckey3 + '.pv.src');
+      try {
+        fs.writeFileSync(srcTmp, buf);
+        await gdiThumb(srcTmp, pvJpg3, 1024);
+      } catch (e) {}
+      try { fs.unlinkSync(srcTmp); } catch (e) {}
+    }
+    if (fs.existsSync(pvJpg3)) {
+      return sendJson(res, 200, {
+        ok: true, type: 'image',
+        dataUrl: 'data:image/jpeg;base64,' + fs.readFileSync(pvJpg3).toString('base64'),
+        note: '图片转码预览（完整内容请用系统看图工具打开）', ext
+      });
+    }
+    return sendJson(res, 200, { ok: true, type: 'fallback', message: '无法解码该图片格式，请用系统看图工具打开', ext });
   }
 
   throw new Error('unsupported office format: ' + ext);
