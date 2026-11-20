@@ -988,7 +988,7 @@ function resolveAllowedPath(pathStr, cfg, opts) {
   for (const name of Object.keys(cfg.sources)) {
     const src = cfg.sources[name];
     if (src.type !== 'local') continue;
-    if (matchAnyRoot(norm, src.roots)) return norm;
+    if (matchAnyRoot(norm, src.roots)) { noteNetHost(norm); return norm; }
   }
   // —— 形态/短名兜底（2026-11-18）：网络盘快捷方式目标与 roots 常为同一共享的不同形态
   //    （映射盘 vs UNC）或 8.3 短名——换算形态 + realpath 解短名后重试，仍不匹配才拒绝 ——
@@ -996,7 +996,7 @@ function resolveAllowedPath(pathStr, cfg, opts) {
     for (const name of Object.keys(cfg.sources)) {
       const src = cfg.sources[name];
       if (src.type !== 'local') continue;
-      if (matchAnyRoot(alt, src.roots)) return alt;
+      if (matchAnyRoot(alt, src.roots)) { noteNetHost(alt); return alt; }
     }
   }
   try {
@@ -1005,7 +1005,7 @@ function resolveAllowedPath(pathStr, cfg, opts) {
       for (const name of Object.keys(cfg.sources)) {
         const src = cfg.sources[name];
         if (src.type !== 'local') continue;
-        if (matchAnyRoot(real, src.roots)) return real;
+        if (matchAnyRoot(real, src.roots)) { noteNetHost(real); return real; }
       }
     }
   } catch (e) {}
@@ -1140,6 +1140,38 @@ function parseHkuSids(text) {
   }
   return out;
 }
+// —— 应用已知主机补源（2026-11-20）：零 PowerShell，确定性 ——
+// 仅靠注册表/net use 会漏掉"只通过本应用访问、从未映射盘符、从未用资源管理器浏览过"的共享主机
+// （典型客户机素材库场景：收藏夹直连 \\host\share，注册表里没有任何记录；旧版靠 Get-SmbConnection
+// 的应用 SMB 会话带出，换零 PS 枚举后此覆盖丢失）。来源：配置 roots 的 UNC 主机 + 收藏夹的
+// UNC 主机 + 服务实际解析过的 UNC 路径主机。
+const _appNetHosts = new Map();
+function noteNetHost(p) {
+  const s = String(p || '');
+  if (!s.startsWith('\\\\')) return;
+  const host = s.slice(2).split('\\')[0].toLowerCase();
+  if (host) _appNetHosts.set(host, Date.now());
+}
+function appNetEntries() {
+  const out = [];
+  const seen = new Set();
+  const add = (p) => {
+    const s = String(p || '');
+    if (!s.startsWith('\\\\')) return;
+    const host = s.slice(2).split('\\')[0].toLowerCase();
+    if (host && !seen.has(host)) { seen.add(host); out.push({ path: '\\\\' + host, letter: null }); }
+  };
+  for (const h of _appNetHosts.keys()) add('\\\\' + h);
+  try {
+    const cfg = loadConfig();
+    for (const src of Object.values(cfg.sources || {})) {
+      if (src.type !== 'local') continue;
+      for (const r of (src.roots || [])) add(r);
+    }
+    for (const f of loadFavorites()) add(typeof f === 'string' ? f : f && f.path);
+  } catch (e) {}
+  return out;
+}
 async function refreshNetShares() {
   const MP_CU = 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2';
   const sids = parseHkuSids(await runTool(['reg', 'query', 'HKU'], 8000));
@@ -1160,7 +1192,7 @@ async function refreshNetShares() {
       .then(t => t == null ? null : parseRegMounts(t, mk)));
   }
   const parts = await Promise.all(jobs);
-  const arr = [].concat(...parts.filter(p => p != null));
+  const arr = [].concat(...parts.filter(p => p != null), appNetEntries());
   // —— 通用归一规则（产品级，不针对任何具体主机/机器） ——
   // 所有网络共享条目一律收敛到主机根：任何 \\host\share\... 深度的路径
   // （映射盘符 / UNC 记录 / 活跃 SMB 连接，任何主机、任何深度）统一归一为 \\host，
@@ -1173,9 +1205,10 @@ async function refreshNetShares() {
     }
     return s;
   };
-  const list = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
-    .map(x => ({ path: toHostRoot(x.path), letter: x.letter || null }))
-    .filter((x, i, a) => a.findIndex(y => (y.letter || '') === (x.letter || '') && y.path.toLowerCase() === x.path.toLowerCase()) === i);
+  const mapped = arr.filter(x => x && x.path && /^\\\\/.test(x.path))
+    .map(x => ({ path: toHostRoot(x.path), letter: x.letter || null }));
+  mapped.sort((a, b) => (b.letter ? 1 : 0) - (a.letter ? 1 : 0));   // 同主机多条目保留带盘符的
+  const list = mapped.filter((x, i, a) => a.findIndex(y => y.path.toLowerCase() === x.path.toLowerCase()) === i);
   const cleanRun = sids != null && parts.every(p => p != null);   // 全部源完整跑完才算"确实没有条目"
   if (list.length || cleanRun || !netCache) netCache = list;
   // 降级运行（有源被杀/失败且没拿到条目）：2 分钟后就重试，不等满 10 分钟
