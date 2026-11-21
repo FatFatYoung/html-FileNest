@@ -311,7 +311,12 @@ html-FileNest/
 
 ## Changelog
 
-**v2.2.2.1 (Latest)**
+**v2.2.2.2 (Latest)**
+
+  **Security**
+  - Embedded Ghostscript extraction now validates every archive entry name before writing anything (all-or-nothing): names with parent-directory segments (`..`) or drive prefixes are rejected and abort the extraction entirely. Hardening only — the bundled payload is built from source in this repository; this guards against a tampered build payload.
+
+**v2.2.2.1**
 
   **Improvements**
   - **Sharp, transparent file-type icons**: shortcut icons now inherit the Explorer icon at full jumbo resolution (256px transparent PNG) instead of a small bitmap — crisp at grid size and on high-DPI screens, with properly transparent backgrounds. The "New" menu type icons now show the real Explorer icon as well (previously blank on some systems), also with transparent backgrounds; icon tiles no longer sit on a gray plate.
