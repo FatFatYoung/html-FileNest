@@ -2722,11 +2722,24 @@ async function ensureGs() {
   try {
     const zip = await JSZip.loadAsync(Buffer.from(EMBEDDED_GS_ZIP_B64, 'base64'));
     const dest = path.join(INSTALL_DIR, 'gs');
+    // zip-slip 防护（2026-11-19 安全审查 N4，对齐 extractAllOp.writeEntry）：条目必须落在
+    // INSTALL_DIR\gs 内，拒绝 .. 段/盘符前缀/越级名——嵌入 zip 不豁免（构建投毒或测试钩子
+    // 替换 zip 时同样兜住）。先全量校验再落盘（all-or-nothing）：任一违规抛错整包中止
+    // （外层 catch 归 null，fail-closed），不产生半套解包；JSZip loadAsync 已把 / 风格
+    // .. 段钳到包根，此处补拦反斜杠形态与盘符前缀（win32 path.join 遇盘符绝对段会跳出）
+    const entries = [];
     for (const [name, entry] of Object.entries(zip.files)) {
       if (entry.dir) continue;
       // 条目形如 gs/bin/x、gs/Resource/y：剥掉 gs/ 前缀落到 INSTALL_DIR\gs\
       const rel = name.replace(/\//g, path.sep).replace(/^gs[\\\/]/, '');
-      const out = path.join(dest, rel);
+      const relSafe = String(rel).replace(/^[\\/]+/, '');
+      if (!relSafe || /^[a-zA-Z]:/.test(relSafe) || /(^|[\\/])\.\.([\\/]|$)/.test(relSafe)) {
+        throw new Error('unsafe gs entry: ' + name);
+      }
+      entries.push([relSafe, entry]);
+    }
+    for (const [relSafe, entry] of entries) {
+      const out = path.join(dest, relSafe);
       const dir = path.dirname(out);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(out, Buffer.from(await entry.async('uint8array')));
