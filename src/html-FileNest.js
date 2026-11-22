@@ -32,7 +32,7 @@ if (!process.env.UV_THREADPOOL_SIZE) process.env.UV_THREADPOOL_SIZE = '64';
 
 const APP_NAME    = 'html-FileNest';
 const SERVICE_VER = '2.2.2.2';
-const HOST        = '127.0.0.1';
+const HOST        = '127.0.0.1';  // 仅用于自家端口探活（portOpen）；实际监听绑定见 runServer() 的 bindHost，随 lan_mode 切换
 const INSTALL_DIR = process.env.FIN_INSTALL_DIR || 'C:\\html-FileNest';
 // 打包 exe 自身所在目录（便携运行时可能与 INSTALL_DIR 不同）；从源码运行时为 null
 const SELF_DIR = /html-FileNest\.exe$/i.test(process.execPath) ? path.dirname(process.execPath) : null;
@@ -54,6 +54,7 @@ const DEFAULT_PORTS = { http: 20000, https: 20443 };
 // ============ 默认配置 ============
 const DEFAULT_CONFIG = {
   ports: DEFAULT_PORTS,
+  lan_mode: false,
   mode: 'whitelist',
   sources: {
     default: { type: 'local', tryAll: true, roots: ['*'] }
@@ -101,6 +102,7 @@ function loadConfig() {
 function normalizeConfig(cfg) {
   const c = JSON.parse(JSON.stringify(cfg));
   c.ports = c.ports || DEFAULT_PORTS;
+  c.lan_mode = c.lan_mode === true;
   c.sources = c.sources || DEFAULT_CONFIG.sources;
   c.mode = c.mode || 'whitelist';
   c.allowedExtensions = Array.isArray(c.allowedExtensions) ? c.allowedExtensions : [];
@@ -266,8 +268,8 @@ async function doAuto() {
   await uninstallProduct('html-FileNest', INSTALL_DIR);
   await install();
   showMsg(APP_NAME + ' 部署成功',
-    '· 文件管理器：http://127.0.0.1:' + cfg.ports.http + '/\n' +
-    '· HTTPS：https://127.0.0.1:' + cfg.ports.https + '/\n' +
+    '· 文件管理器：http://' + (cfg.lan_mode ? (firstLanIp() || '0.0.0.0') : '127.0.0.1') + ':' + cfg.ports.http + '/\n' +
+    '· HTTPS：https://' + (cfg.lan_mode ? (firstLanIp() || '0.0.0.0') : '127.0.0.1') + ':' + cfg.ports.https + '/\n' +
     '· 配置：' + CONFIG_PATH + '\n\n' +
     '默认允许浏览全盘。若需限制范围，请编辑 config.json 的 sources.default.roots。\n\n' +
     '卸载：html-FileNest.exe --uninstall',
@@ -437,13 +439,41 @@ function serviceRestartOp(res) {
 }
 
 // ============ 安全校验 ============
-function isLocalHostHeader(h) {
-  if (!h) return false;
-  const s = String(h).toLowerCase();
+function hostOfHeader(h) {
+  const s = String(h || '').toLowerCase();
   const m = s.match(/^\[([^\]]+)\](?::\d+)?$/);
-  if (m) return m[1] === '::1';
-  const parts = s.split(':');
-  return parts[0] === '127.0.0.1' || parts[0] === 'localhost';
+  return m ? m[1] : s.split(':')[0];
+}
+// Host 头门禁（防 DNS rebinding）：默认只认本机名（127.0.0.1 / localhost / ::1）；
+// lan_mode:true 时追加放行本机机器名与本机网卡 IP（局域网访问 Host 头即本机 IP/机器名），
+// 伪造域名解析到本机仍拒。
+function isAllowedHostHeader(h) {
+  if (!h) return false;
+  const host = hostOfHeader(h);
+  if (host === '127.0.0.1' || host === 'localhost' || host === '::1') return true;
+  if (!loadConfig().lan_mode) return false;
+  if (host === os.hostname().toLowerCase()) return true;
+  try {
+    const ifs = os.networkInterfaces();
+    for (const name of Object.keys(ifs)) {
+      for (const it of ifs[name] || []) {
+        if (String(it.address).toLowerCase() === host) return true;
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+// 局域网模式显示地址（部署消息/启动日志用）：首个非回环 IPv4
+function firstLanIp() {
+  try {
+    const ifs = os.networkInterfaces();
+    for (const name of Object.keys(ifs)) {
+      for (const it of ifs[name] || []) {
+        if (it.family === 'IPv4' && !it.internal) return it.address;
+      }
+    }
+  } catch (e) {}
+  return null;
 }
 function normalizeOrigin(o) {
   try { return new URL(o).origin; } catch (e) { return ''; }
@@ -496,6 +526,10 @@ function requestOriginAllowed(req) {
 // ============ 服务 ============
 function runServer() {
   const cfg = loadConfig();
+  // 监听绑定：lan_mode:true 绑 0.0.0.0（局域网可访问），false 绑 127.0.0.1（仅本机）。
+  // 注意：绑定在启动时确定，改 config.json 的 lan_mode 后需 --restart 生效。
+  const bindHost = cfg.lan_mode ? '0.0.0.0' : '127.0.0.1';
+  const displayHost = cfg.lan_mode ? (firstLanIp() || '0.0.0.0') : '127.0.0.1';
   // 启动即后台预热共享枚举（等 PowerShell 冷启动），用户点盘符页时已缓存命中（2026-11-16）
   setTimeout(() => { listNetShares().catch(() => {}); }, 500);
   // 启动后台预热图标/缩略图 FFI 链与解码 worker 池（2026-11-19）：首个用户请求免
@@ -530,14 +564,14 @@ function runServer() {
       log('HTTP ' + cfg.ports.http + ' error: ' + (e.code || e.message) + ' -> exit');
       process.exit(1);
     })
-    .listen(cfg.ports.http, HOST, () => log('HTTP  http://' + HOST + ':' + cfg.ports.http));
+    .listen(cfg.ports.http, bindHost, () => log('HTTP  http://' + displayHost + ':' + cfg.ports.http + (cfg.lan_mode ? ' (LAN mode, bound to 0.0.0.0)' : '')));
 
   if (fs.existsSync(PFX_PATH)) {
     try {
       const pfx = fs.readFileSync(PFX_PATH);
       https.createServer({ pfx, passphrase: PFX_PASS }, handleRequest)
         .on('error', e => log('HTTPS ' + cfg.ports.https + ' error: ' + (e.code || e.message)))
-        .listen(cfg.ports.https, HOST, () => log('HTTPS https://' + HOST + ':' + cfg.ports.https));
+        .listen(cfg.ports.https, bindHost, () => log('HTTPS https://' + displayHost + ':' + cfg.ports.https + (cfg.lan_mode ? ' (LAN mode, bound to 0.0.0.0)' : '')));
     } catch (e) {
       log('HTTPS disabled: ' + e.message);
     }
@@ -574,7 +608,7 @@ function handleRequest(req, res) {
 
   if (p === '/ping' || p === '/open' || p === '/exists' || p === '/reveal' ||
       p === '/open-folder' || p === '/cache/clear') {
-    if (!isLocalHostHeader(req.headers.host)) {
+    if (!isAllowedHostHeader(req.headers.host)) {
       return sendJson(res, 403, { ok: false, error: 'invalid host header' });
     }
     const secLegacy = cfg.security || {};
@@ -682,7 +716,7 @@ function serveUI(res) {
 
 // ============ 文件管理器 API ============
 async function handleApi(req, res, p, q, cfg) {
-  if (!isLocalHostHeader(req.headers.host)) {
+  if (!isAllowedHostHeader(req.headers.host)) {
     return sendJson(res, 403, { ok: false, error: 'invalid host header' });
   }
   const sec = cfg.security || {};

@@ -98,7 +98,7 @@ Open `http://127.0.0.1:20000/ping` — a JSON response with `"ok": true` means e
 
 ## API Reference
 
-All API endpoints are protected by a webpage allowlist: the app's own UI origin - localhost/127.0.0.1 on the ports configured in `config.json` (hot-reloaded, so changing `ports` takes effect without restart; defaults `http://127.0.0.1:20000`, `https://127.0.0.1:20443`) is always allowed and is not subject to the list; same-origin calls whose `Origin` host matches the request `Host` are always allowed as well. Other sites must be registered in `security.allowedOrigins`, either as a full origin (`http://192.168.1.10` - exact scheme, host and port) or as a bare domain (`192.168.1.10` - exact hostname, any scheme or port). Matching is exact: no wildcards and no subdomain inheritance - `b.a.com` needs its own entry even when `a.com` is listed. An empty list (default) rejects every other site; `Origin: null` is always rejected. Requests with no `Origin` (curl, local scripts) are allowed.
+All API endpoints are protected by a webpage allowlist: the app's own UI origin - localhost/127.0.0.1 on the ports configured in `config.json` (hot-reloaded, so changing `ports` takes effect without restart; defaults `http://127.0.0.1:20000`, `https://127.0.0.1:20443`) is always allowed and is not subject to the list; same-origin calls whose `Origin` host matches the request `Host` are always allowed as well. Other sites must be registered in `security.allowedOrigins`, either as a full origin (`http://192.168.1.10` - exact scheme, host and port) or as a bare domain (`192.168.1.10` - exact hostname, any scheme or port). Matching is exact: no wildcards and no subdomain inheritance - `b.a.com` needs its own entry even when `a.com` is listed. An empty list (default) rejects every other site; `Origin: null` is always rejected. Requests with no `Origin` (curl, local scripts) are allowed. With `lan_mode: true` the service binds to `0.0.0.0` and the Host header gate additionally accepts this machine's hostname and interface IPs, so LAN peers can use the UI while forged hostnames remain rejected.
 
 ### Health Check
 
@@ -169,6 +169,7 @@ Edit `C:\html-FileNest\config.json`:
 ```json
 {
   "ports": { "http": 20000, "https": 20443 },
+  "lan_mode": false,
   "mode": "whitelist",
   "sources": {
     "default": {
@@ -202,6 +203,7 @@ Edit `C:\html-FileNest\config.json`:
 | Field | Description |
 |-------|-------------|
 | `ports` | HTTP/HTTPS listening ports (default: 20000/20443) |
+| `lan_mode` | `false` = listen on `127.0.0.1` only (default). `true` = listen on `0.0.0.0` so LAN peers can reach the service. Takes effect after `html-FileNest.exe --restart`. In LAN mode the Host header gate additionally accepts this machine's hostname and interface IPs (foreign hostnames are still rejected); open the firewall for the ports and consider `security.authToken`. |
 | `sources.*.roots` | Allowed root paths. `"*"` = all drives. Use `"C:\\Users\\me\\*"` to restrict scope |
 | `allowedExtensions` | Whitelist of allowed extensions. Empty array = no restriction |
 | `deniedPaths` | Path blacklist: listed files/folders cannot be browsed, searched, read or modified (hidden from listings too). The app's own install directory is always denied (except the app-managed recycle bin, which stays readable for its preview/download; writes still blocked) |
