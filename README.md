@@ -164,6 +164,8 @@ All API endpoints are protected by a webpage allowlist: the app's own UI origin 
 
 ## Configuration
 
+Installing or upgrading backs the current `config.json` up to `config.json.bak`, then rewrites it on the latest template: values you have set are kept (nested objects merged), keys new in this version are added with their defaults, and obsolete keys are preserved as-is. Listen binding changes need `html-FileNest.exe --restart`.
+
 Edit `C:\html-FileNest\config.json`:
 
 ```json
@@ -235,7 +237,7 @@ Config values support `${VAR}` syntax for dynamic expansion:
 
 ## Web UI Features
 
-- **Customizable UI** — The UI is a standalone `index.html` file. Source at `src/index.html`; deployed to `C:\html-FileNest\index.html` on install and refreshed on upgrade (the replaced file is backed up to `index.html.bak`). Edit the deployed file to personalize — restarting from the installed location never overwrites it (hot-reloads on refresh)
+- **Customizable UI** — The UI is a standalone `index.html` file. Source at `src/index.html`; deployed to `C:\html-FileNest\index.html` on install and refreshed on upgrade. Edit the deployed file to personalize — restarting from the installed location never overwrites it (hot-reloads on refresh)
 - **Grid / List views** — Toggle between visual grid and detailed list
 - **Directory tree sidebar** — Clickable tree showing current path hierarchy and subdirectories; "All Locations" root node for quick return
 - **Collapsible sidebar** — Collapse/expand the directory tree via the toolbar button or `Ctrl+B`; the choice is remembered across sessions
@@ -269,7 +271,7 @@ Run in an **elevated** command prompt:
 html-FileNest.exe --uninstall
 ```
 
-This removes the scheduled task, the local certificate and the UI files (`index.html`, `index.html.bak`); the exe itself and `config.json` remain in `C:\html-FileNest\` (delete the folder manually for a full cleanup).
+This removes the scheduled task, the local certificate and the UI file (`index.html`); the exe itself, `config.json` and its install-time backup `config.json.bak` remain in `C:\html-FileNest\` (delete the folder manually for a full cleanup).
 
 Or manually:
 1. Delete the scheduled task `html-FileNest` (taskschd.msc)

@@ -99,6 +99,26 @@ function loadConfig() {
   }
 }
 
+// config.json 升级合并（安装/升级时写盘用）：以最新默认模板为底，老配置已有值全部继承
+// （对象逐键递归合并，数组/标量整体取老值），老配置缺失的新键补默认值，模板已废弃的键原样保留。
+function mergeConfigUpgrade(base, old) {
+  const out = {};
+  const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
+  for (const k of Object.keys(base)) {
+    if (old && Object.prototype.hasOwnProperty.call(old, k)) {
+      out[k] = (isObj(base[k]) && isObj(old[k])) ? mergeConfigUpgrade(base[k], old[k]) : old[k];
+    } else {
+      out[k] = base[k];
+    }
+  }
+  if (old && typeof old === 'object' && !Array.isArray(old)) {
+    for (const k of Object.keys(old)) {
+      if (!Object.prototype.hasOwnProperty.call(out, k)) out[k] = old[k];
+    }
+  }
+  return out;
+}
+
 function normalizeConfig(cfg) {
   const c = JSON.parse(JSON.stringify(cfg));
   c.ports = c.ports || DEFAULT_PORTS;
@@ -183,7 +203,7 @@ async function removeWithRetry(p, isDir) {
 // 强卸载（2026-11-18 自特例版引入，按用户要求收窄）：安装/升级前清旧版程序
 // （进程+计划任务+安装目录程序文件），只针对 html-FileNest 本产品；
 // 用户数据一律保留——config.json/favorites.json/recycle_bin/recycle_meta.json/
-// upload-journal.json/index.html/index.html.bak/filenest.pfx/filenest.cer/file-index.db*，
+// upload-journal.json/index.html/config.json.bak/filenest.pfx/filenest.cer/file-index.db*，
 // 升级后原配置、原证书信任与原索引库自动继承（2.2.0.0 起 SQLite 索引升级不重建）。
 // 证书信任链升级时一并继承（不清证书库、保留 filenest.pfx/cer，浏览器免重信任），
 // 显式卸载 --uninstall 才清证书。
@@ -238,8 +258,8 @@ async function uninstallProduct(name, knownDir) {
   spawnSync('schtasks', ['/delete', '/tn', TASK_NAME, '/f'], { stdio: 'ignore', windowsHide: true });
   // 3) 清安装目录程序文件（逐候选；发现型候选的目录名必须等于产品名才删，防误删）
   //    不整目录盲删——盲删会把用户配置一锅端；被占用文件抛错时又半途而废留下残留
-  const keep = ['config.json', 'favorites.json', 'recycle_bin', 'recycle_meta.json', 'upload-journal.json',
-    'index.html', 'index.html.bak', 'filenest.pfx', 'filenest.cer',
+  const keep = ['config.json', 'config.json.bak', 'favorites.json', 'recycle_bin', 'recycle_meta.json', 'upload-journal.json',
+    'index.html', 'filenest.pfx', 'filenest.cer',
     'file-index.db', 'file-index.db-wal', 'file-index.db-shm'];
   for (const dir of candidates) {
     try {
@@ -297,17 +317,34 @@ async function install() {
       const uiNew = uiSrc ? fs.readFileSync(uiSrc, 'utf8') : UI_HTML_DEPLOY;
       const uiOld = fs.existsSync(uiDst) ? fs.readFileSync(uiDst, 'utf8') : null;
       if (uiOld !== uiNew) {
-        if (uiOld !== null) {
-          // 旧 UI 先备份为 index.html.bak（用户个性化修改可找回）
-          try { fs.writeFileSync(uiDst + '.bak', uiOld, 'utf8'); } catch (e) {}
-        }
+        // UI 不做备份（2026-11-23 用户：安装时 index.html 无需备份，需备份的是 config.json）
         fs.writeFileSync(uiDst, uiNew, 'utf8');
-        log('index.html 已部署到 ' + uiDst + (uiOld !== null ? '（旧文件备份为 index.html.bak）' : ''));
+        log('index.html 已部署到 ' + uiDst);
       }
+      // 旧备份机制遗留的 index.html.bak 顺手清掉
+      try { if (fs.existsSync(uiDst + '.bak')) fs.unlinkSync(uiDst + '.bak'); } catch (e) {}
     }
   }
+  // config.json：缺失→写最新默认；已存在→先备份 config.json.bak，再以最新模板为底合并升级
+  // （老配置已有值全部继承含嵌套对象，新键补默认值，模板已废弃的键原样保留不丢）
   if (!fs.existsSync(CONFIG_PATH)) {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf8');
+  } else {
+    let oldRaw = null;
+    try { oldRaw = fs.readFileSync(CONFIG_PATH, 'utf8'); } catch (e) {}
+    try {
+      const oldCfg = oldRaw != null ? JSON.parse(oldRaw) : {};
+      const merged = mergeConfigUpgrade(DEFAULT_CONFIG,
+        (oldCfg && typeof oldCfg === 'object' && !Array.isArray(oldCfg)) ? oldCfg : {});
+      if (oldRaw != null) { try { fs.writeFileSync(CONFIG_PATH + '.bak', oldRaw, 'utf8'); } catch (e) {} }
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), 'utf8');
+      log('config.json 已合并升级到最新模板（原配置值已继承，备份 config.json.bak）');
+    } catch (e) {
+      // 老 config.json 无法解析：备份原文后重置为最新默认
+      try { if (oldRaw != null) fs.writeFileSync(CONFIG_PATH + '.bak', oldRaw, 'utf8'); } catch (e2) {}
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf8');
+      log('config.json 无法解析，已备份 config.json.bak 并重置为默认配置');
+    }
   }
   // UV_THREADPOOL_SIZE=64：fs 线程池默认 4 线程，被慢盘/死 UNC 占满时目录枚举整体卡死
   // （2026-11-15 卡顿根因之一）；内容有变时重写 start.vbs，旧部署升级后自动换新。
@@ -357,7 +394,7 @@ function doUninstall() {
   [VBS_PATH, PFX_PATH, CER_PATH].forEach(f => {
     try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
   });
-  // 界面文件随卸载清理（含升级备份 index.html.bak），避免残留旧 UI 毒害下次安装
+  // 界面文件随卸载清理（含历史遗留 index.html.bak），避免残留旧 UI 毒害下次安装
   [path.join(INSTALL_DIR, 'index.html'), path.join(INSTALL_DIR, 'index.html.bak')].forEach(f => {
     try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
   });
