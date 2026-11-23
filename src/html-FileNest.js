@@ -31,7 +31,7 @@ process.on('uncaughtException', (err) => {
 if (!process.env.UV_THREADPOOL_SIZE) process.env.UV_THREADPOOL_SIZE = '64';
 
 const APP_NAME    = 'html-FileNest';
-const SERVICE_VER = '2.2.2.2';
+const SERVICE_VER = '2.3.0.0';
 const HOST        = '127.0.0.1';  // 仅用于自家端口探活（portOpen）；实际监听绑定见 runServer() 的 bindHost，随 lan_mode 切换
 const INSTALL_DIR = process.env.FIN_INSTALL_DIR || 'C:\\html-FileNest';
 // 打包 exe 自身所在目录（便携运行时可能与 INSTALL_DIR 不同）；从源码运行时为 null

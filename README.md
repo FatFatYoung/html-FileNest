@@ -315,7 +315,16 @@ html-FileNest/
 
 ## Changelog
 
-**v2.2.2.2 (Latest)**
+**v2.3.0.0 (Latest)**
+
+  **New features**
+  - **LAN mode (`lan_mode` config key)**: `false` (default) keeps listening on `127.0.0.1` for this machine only; `true` binds `0.0.0.0` so LAN peers can reach the service. In LAN mode the Host-header gate additionally accepts this machine's hostname and interface IPs (forged hostnames are still rejected; DNS-rebinding protection kept). Changing the value needs `html-FileNest.exe --restart`; the startup log and install dialog then show the real access URL.
+
+  **Improvements**
+  - **Config upgrades now merge instead of freezing**: installing or upgrading backs `config.json` up to `config.json.bak` verbatim and rewrites it on the latest template — every value you have set is kept (nested objects merged), keys new in this version are added with their defaults, and obsolete keys are preserved as-is. Previously an existing `config.json` was never touched, so new keys never appeared after an upgrade.
+  - `index.html` is no longer backed up to `index.html.bak` on deploy — the config backup covers what actually needs backup; a leftover `index.html.bak` from older versions is cleaned up on install, and `--uninstall` now keeps `config.json.bak` alongside `config.json`.
+
+**v2.2.2.2**
 
   **Security**
   - Embedded Ghostscript extraction now validates every archive entry name before writing anything (all-or-nothing): names with parent-directory segments (`..`) or drive prefixes are rejected and abort the extraction entirely. Hardening only — the bundled payload is built from source in this repository; this guards against a tampered build payload.
