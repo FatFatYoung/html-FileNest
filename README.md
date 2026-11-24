@@ -315,7 +315,12 @@ html-FileNest/
 
 ## Changelog
 
-**v2.4.0.0 (Latest)**
+**v2.4.1.0 (Latest)**
+
+  **Fixes**
+  - **System-open actions disabled for non-host clients under LAN mode**: "Open with system app" and "Reveal in Explorer" (preview button, context menu, double-click, shortcut targets) are now hidden and disabled when the page is accessed from another machine, since these actions only have an effect on the host.
+
+  **v2.4.0.0**
 
   **New features**
   - **Browse button on path dialogs**: the Go-to, Copy-to and Move-to dialogs (single and batch) now have a Browse button that opens a server-side folder picker with root shortcuts, up-level navigation and "choose this folder". The picker lists folders through the same access-controlled API as the main view, so the picked path is always a server-side path (correct under LAN mode) and blacklisted or out-of-roots paths are never shown.
