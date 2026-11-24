@@ -500,6 +500,23 @@ function isAllowedHostHeader(h) {
   } catch (e) {}
   return false;
 }
+// 请求来源是否服务机本机：回环（含 IPv4-mapped IPv6 归一化）+ 任一本网卡 IP。
+// 用途：/ping 供前端判定“当前访问者是否本机”，非本机客户端隐藏/禁用系统打开类功能（2026-11-25）
+function isLocalRequest(req) {
+  let a = String((req.socket && req.socket.remoteAddress) || '').toLowerCase();
+  if (a.startsWith('::ffff:')) a = a.slice(7);
+  if (a === '127.0.0.1' || a === '::1' || a === 'localhost') return true;
+  try {
+    const ifs = os.networkInterfaces();
+    for (const name of Object.keys(ifs)) {
+      for (const it of ifs[name] || []) {
+        if (String(it.address).toLowerCase() === a) return true;
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
 // 局域网模式显示地址（部署消息/启动日志用）：首个非回环 IPv4
 function firstLanIp() {
   try {
@@ -657,6 +674,7 @@ function handleRequest(req, res) {
   if (p === '/ping') {
     return sendJson(res, 200, {
       ok: true, service: APP_NAME, name: APP_NAME, version: SERVICE_VER, pid: process.pid,
+      isLocal: isLocalRequest(req),
       ports: cfg.ports,
       sources: Object.keys(cfg.sources),
       mode: cfg.mode,

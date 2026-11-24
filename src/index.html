@@ -2039,8 +2039,12 @@ body {
     try { document.execCommand('copy'); } catch (e) {}
     document.body.removeChild(ta);
   }
+  // 非服务机客户端禁用系统打开类功能（2026-11-25）：/ping isLocal 探测前默认可用
+  var IS_LOCAL = true;
   // 在资源管理器中定位（/reveal，选中文件）
   function revealItem(item) {
+    if (!IS_LOCAL) return;   // 非服务机客户端禁用
+
     fetch('/reveal?path=' + enc(item.path), { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
@@ -2070,6 +2074,8 @@ body {
   }
   // 用系统默认程序打开文件（后端 /open，内部走 explorer.exe，失败降级 rundll32）
   function openWithSystem(item) {
+    if (!IS_LOCAL) return;   // 非服务机客户端禁用
+
     // 防御：path 含 :: 但 _zip 标记丢失时自动提取
     if (!item._zip && item.path && item.path.indexOf('::') > 0) {
       var _s = item.path.indexOf('::');
@@ -2469,7 +2475,8 @@ body {
     } else if (item && item._entry) {
       // —— 首页入口卡片（盘符/桌面/共享主机根）：不提供收藏/复制/移动/重命名/删除 ——
       if (item.type === 'dir') add(tr('打开'), '📂', function () { openItem(item); });
-      add(tr('在资源管理器中显示'), '📌', function () { revealItem(item); });
+      if (IS_LOCAL) add(tr('在资源管理器中显示'), '📌', function () { revealItem(item); });
+
       sep();
       add(tr('属性'), 'ℹ️', function () { showProps(item); });
     } else if (item) {
@@ -2486,7 +2493,8 @@ body {
           add(tr('下载'), '⬇', function () {
             window.open('/api/archive-extract?path=' + enc(item._zip) + '&entry=' + enc(item._zipEntry), '_blank');
           });
-          add(tr('用系统程序打开'), '🚀', function () { openWithSystem(item); });
+          if (IS_LOCAL) add(tr('用系统程序打开'), '🚀', function () { openWithSystem(item); });
+
         } else {
           add(tr('打开'), '📂', function () { openItem(item); });
         }
@@ -2512,9 +2520,11 @@ body {
             a.download = item.name;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
           });
-          add(tr('用系统程序打开'), '🚀', function () { openWithSystem(item); });
+          if (IS_LOCAL) add(tr('用系统程序打开'), '🚀', function () { openWithSystem(item); });
+
         }
-        add(tr('在资源管理器中显示'), '📌', function () { revealItem(item); });
+        if (IS_LOCAL) add(tr('在资源管理器中显示'), '📌', function () { revealItem(item); });
+
         sep();
         add(isFav(item.path) ? tr('取消收藏') : tr('收藏到首页'), '⭐', function () { toggleFavorite(item); });
         sep();
@@ -3050,6 +3060,15 @@ body {
   });
 
   function init() {
+    // 非服务机客户端：探测 isLocal 并隐藏/禁用系统打开类入口（2026-11-25）
+    apiGet('/ping').then(function (d) {
+      IS_LOCAL = !!(d && d.isLocal === true);
+      if (!IS_LOCAL) {
+        var po = document.getElementById('preview-open');
+        if (po) po.style.display = 'none';
+      }
+    }).catch(function () {});
+
     loadFavorites();
     apiGet('/api/roots').then(function (r) {
       state.roots = r.roots || [];
