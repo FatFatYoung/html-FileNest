@@ -261,6 +261,20 @@ body {
 }
 .modal-input:focus { border-color: var(--accent); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* —— 服务端目录选择器（浏览按钮）：全走 /api 数据，局域网模式下选的是服务端路径 —— */
+#picker-path {
+  font-size: 12px; opacity: .85; word-break: break-all;
+  padding: 6px 8px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; margin-bottom: 8px;
+}
+#picker-roots { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+#picker-roots .btn { padding: 3px 8px; font-size: 12px; }
+#picker-list {
+  min-height: 120px; max-height: 320px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px;
+}
+.picker-item { padding: 7px 10px; cursor: pointer; border-radius: 4px; font-size: 13px; }
+.picker-item:hover { background: var(--accent); color: #fff; }
 .context-menu {
   position: fixed; background: var(--bg-2);
   border: 1px solid var(--border); border-radius: 8px;
@@ -365,8 +379,22 @@ body {
     <div class="modal-title" id="modal-title"></div>
     <input class="modal-input" id="modal-input">
     <div class="modal-actions">
+      <button class="btn" id="modal-browse" data-i18n="浏览…" style="display:none;margin-right:auto">浏览…</button>
       <button class="btn" id="modal-cancel" data-i18n="取消">取消</button>
       <button class="btn primary" id="modal-ok" data-i18n="确定">确定</button>
+    </div>
+  </div>
+</div>
+<div class="modal-bg" id="picker-bg" style="z-index:1001">
+  <div class="modal" style="width:520px">
+    <div class="modal-title" id="picker-title" data-i18n="选择目标目录（服务端路径）">选择目标目录（服务端路径）</div>
+    <div id="picker-roots"></div>
+    <div id="picker-path"></div>
+    <div id="picker-list"></div>
+    <div class="modal-actions">
+      <button class="btn" id="picker-up" data-i18n="上级">上级</button>
+      <button class="btn" id="picker-cancel" data-i18n="取消">取消</button>
+      <button class="btn primary" id="picker-choose" data-i18n="选择此目录">选择此目录</button>
     </div>
   </div>
 </div>
@@ -539,6 +567,13 @@ body {
     "移动完成": "Move complete",
     "移动失败: ": "Move failed: ",
     "跳转到路径（绝对路径）": "Go to path (absolute)",
+      "浏览…": "Browse…",
+      "选择目标目录（服务端路径）": "Choose target folder (server-side path)",
+      "上级": "Up",
+      "选择此目录": "Choose this folder",
+      "加载中…": "Loading…",
+      "（空）": "(empty)",
+      "无法列出目录": "Cannot list folder",
     "上传中… 共 {n} 个文件": "Uploading… {n} files",
     "上传完成: {ok} 成功": "Upload done: {ok} ok",
     " / {f} 失败": " / {f} failed",
@@ -800,7 +835,7 @@ body {
   }
   var modalResolve = null;
   var modalMode = 'input';   // 'input' | 'confirm'
-  function openModal(title, def) {
+  function openModal(title, def, opts) {
     return new Promise(function (resolve) {
       modalResolve = resolve;
       modalMode = 'input';
@@ -808,6 +843,7 @@ body {
       modalTitle.style.whiteSpace = '';
       modalInput.style.display = '';
       modalInput.value = def || '';
+      $('modal-browse').style.display = (opts && opts.browse) ? '' : 'none';   // 路径类对话框显示"浏览…"
       modalBg.classList.add('show');
       setTimeout(function () { modalInput.focus(); modalInput.select(); }, 30);
     });
@@ -820,6 +856,7 @@ body {
       modalTitle.textContent = msg;
       modalTitle.style.whiteSpace = 'pre-line';
       modalInput.style.display = 'none';
+      $('modal-browse').style.display = 'none';
       modalBg.classList.add('show');
       setTimeout(function () { $('modal-ok').focus(); }, 30);
     });
@@ -838,6 +875,87 @@ body {
     if (e.key === 'Escape') { e.preventDefault(); closeModal(null); }
   };
   modalBg.onclick = function (e) { if (e.target === modalBg) closeModal(null); };
+
+  // —— 服务端目录选择器（2026-11-24）：浏览按钮弹出；全走 /api/roots + /api/ls ——
+  // 局域网模式下浏览器在客户端机器，原生文件选择器选的是客户端路径——这里不碰它，
+  // 列的全是服务端目录，填回输入框的就是服务端绝对路径。/api/ls 本身受 roots 白名单
+  // + 路径黑名单约束，选择器天然排除黑名单路径。
+  var pickerResolve = null, pickerDir = '';
+  function pickerDirname(p) {
+    var s = String(p || '').replace(/[\\/]+$/, '');
+    var i = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/'));
+    if (i < 0) return s;
+    if (i === 2 && s.charCodeAt(1) === 58) return s.slice(0, 3);   // C:\xxx → C:\
+    return s.slice(0, i);
+  }
+  function openPathPicker(start) {
+    return new Promise(function (resolve) {
+      pickerResolve = resolve;
+      $('picker-bg').classList.add('show');
+      $('picker-path').textContent = '';
+      var list = $('picker-list');
+      list.innerHTML = '<div style="padding:10px;opacity:.6">' + tr('加载中…') + '</div>';
+      apiGet('/api/roots').then(function (r) {
+        var roots = (r && r.roots) || [];
+        var bar = $('picker-roots');
+        bar.innerHTML = '';
+        roots.forEach(function (rt) {
+          var b = document.createElement('button');
+          b.className = 'btn';
+          b.textContent = rt.display || rt.path;
+          b.title = rt.path;
+          b.onclick = function () { pickerLoad(rt.path); };
+          bar.appendChild(b);
+        });
+        pickerLoad(start || (roots[0] && roots[0].path) || '');
+      }).catch(function () {
+        pickerLoad(start || '');
+      });
+    });
+  }
+  function pickerLoad(dir, noFallback) {
+    pickerDir = dir;
+    $('picker-path').textContent = dir;
+    var list = $('picker-list');
+    list.innerHTML = '<div style="padding:10px;opacity:.6">' + tr('加载中…') + '</div>';
+    apiGet('/api/ls?path=' + encodeURIComponent(dir) + '&sort=name&asc=1').then(function (r) {
+      if (!r || !r.items) throw new Error('bad ls');
+      if (dir !== pickerDir) return;   // 迟到响应丢弃
+      list.innerHTML = '';
+      var dirs = r.items.filter(function (it) { return it.type === 'dir'; });
+      if (!dirs.length) {
+        list.innerHTML = '<div style="padding:10px;opacity:.6">' + tr('（空）') + '</div>';
+        return;
+      }
+      dirs.forEach(function (it) {
+        var d = document.createElement('div');
+        d.className = 'picker-item';
+        d.textContent = '\u{1F4C1} ' + it.name;
+        d.onclick = function () { pickerLoad(it.path); };
+        list.appendChild(d);
+      });
+    }).catch(function () {
+      if (!noFallback && dir) return pickerLoad(pickerDirname(dir), true);   // 传入的是文件路径→回退其所在目录
+      list.innerHTML = '<div style="padding:10px;opacity:.6">' + tr('无法列出目录') + '</div>';
+    });
+  }
+  $('picker-up').onclick = function () { pickerLoad(pickerDirname(pickerDir)); };
+  $('picker-choose').onclick = function () {
+    $('picker-bg').classList.remove('show');
+    if (pickerResolve) { pickerResolve(pickerDir); pickerResolve = null; }
+  };
+  $('picker-cancel').onclick = function () {
+    $('picker-bg').classList.remove('show');
+    if (pickerResolve) { pickerResolve(null); pickerResolve = null; }
+  };
+  $('picker-bg').onclick = function (e) {
+    if (e.target === $('picker-bg')) $('picker-cancel').click();
+  };
+  $('modal-browse').onclick = function () {
+    openPathPicker(modalInput.value.trim()).then(function (dir) {
+      if (dir) { modalInput.value = dir; modalInput.focus(); }
+    });
+  };
 
   function renderRoots() {
     var el = $('tree');
@@ -1384,7 +1502,7 @@ body {
   }
   function doDelete(item) { deleteItems([item]); }
   function copyBatch(items) {
-    openModal(tr('批量复制到…（填写目标文件夹完整路径）'), state.current && state.current.path.indexOf('*') < 0 ? state.current.path : '')
+    openModal(tr('批量复制到…（填写目标文件夹完整路径）'), state.current && state.current.path.indexOf('*') < 0 ? state.current.path : '', { browse: true })
       .then(function (to) {
         if (!to) return;
         runBatch(tr('复制'), items, function (it) {
@@ -1393,7 +1511,7 @@ body {
       });
   }
   function moveBatch(items) {
-    openModal(tr('批量移动到…（填写目标文件夹完整路径）'), state.current && state.current.path.indexOf('*') < 0 ? state.current.path : '')
+    openModal(tr('批量移动到…（填写目标文件夹完整路径）'), state.current && state.current.path.indexOf('*') < 0 ? state.current.path : '', { browse: true })
       .then(function (to) {
         if (!to) return;
         runBatch(tr('移动'), items, function (it) {
@@ -2562,7 +2680,7 @@ body {
   }
   // 复制到…：弹出目标路径输入框，确认后调用 /api/cp（后端递归复制）
   function doCopy(item) {
-    openModal(tr('复制到…（填写完整目标路径）'), item.path).then(function (to) {
+    openModal(tr('复制到…（填写完整目标路径）'), item.path, { browse: true }).then(function (to) {
       if (!to || to === item.path) return;
       showToast(tr('复制中…'));
       apiPost('/api/cp', { from: item.path, to: to })
@@ -2575,7 +2693,7 @@ body {
   }
   // 移动到…：弹出目标路径输入框，确认后调用 /api/mv
   function doMove(item) {
-    openModal(tr('移动到…（填写完整目标路径）'), item.path).then(function (to) {
+    openModal(tr('移动到…（填写完整目标路径）'), item.path, { browse: true }).then(function (to) {
       if (!to || to === item.path) return;
       showToast(tr('移动中…'));
       apiPost('/api/mv', { from: item.path, to: to })
@@ -2592,7 +2710,7 @@ body {
     });
   }
   function doGoto() {
-    openModal(tr('跳转到路径（绝对路径）'), state.current && state.current.path !== '*' ? state.current.path : '')
+    openModal(tr('跳转到路径（绝对路径）'), state.current && state.current.path !== '*' ? state.current.path : '', { browse: true })
       .then(function (p) {
         if (!p) return;
         navTo({ path: p, source: state.current ? state.current.source : 'default' });
