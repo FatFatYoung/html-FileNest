@@ -315,7 +315,12 @@ html-FileNest/
 
 ## Changelog
 
-**v2.3.0.0 (Latest)**
+**v2.4.0.0 (Latest)**
+
+  **New features**
+  - **Browse button on path dialogs**: the Go-to, Copy-to and Move-to dialogs (single and batch) now have a Browse button that opens a server-side folder picker with root shortcuts, up-level navigation and "choose this folder". The picker lists folders through the same access-controlled API as the main view, so the picked path is always a server-side path (correct under LAN mode) and blacklisted or out-of-roots paths are never shown.
+
+**v2.3.0.0**
 
   **New features**
   - **LAN mode (`lan_mode` config key)**: `false` (default) keeps listening on `127.0.0.1` for this machine only; `true` binds `0.0.0.0` so LAN peers can reach the service. In LAN mode the Host-header gate additionally accepts this machine's hostname and interface IPs (forged hostnames are still rejected; DNS-rebinding protection kept). Changing the value needs `html-FileNest.exe --restart`; the startup log and install dialog then show the real access URL.

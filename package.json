@@ -1,6 +1,6 @@
 {
   "name": "html-FileNest",
-  "version": "2.3.0.0",
+  "version": "2.4.0.0",
   "dependencies": {
     "jimp": "^1.6.1",
     "jszip": "3.10.2",
